@@ -55,15 +55,15 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1.0
-          name: Learn v1.1.0
+          tag_name: v1.2.0
+          name: Learn v1.2.0
           body: |
-            Learn v1.1.0
+            Learn v1.2.0
 
-            - Correctifs de stabilité pour le moteur Whisper et le microphone.
-            - Téléchargement et import du modèle plus sûrs, avec validation et conservation de l'ancien modèle en cas d'échec.
-            - Limite d'enregistrement de 10 minutes pour réduire les risques de saturation mémoire.
-            - Historique avec confirmation avant suppression globale.
+            - Modèles Tiny Q8, Base Q5 et Small Q5 adaptés aux téléphones.
+            - Limite d'enregistrement de 2 minutes par session.
+            - Erreurs de transcription explicites et durée de traitement affichée.
+            - Mise à jour de whisper.cpp vers v1.9.5.
             - Compilation avec Android API 36 et NDK compatible avec les pages mémoire de 16 Ko.
           files: dist/app-debug.apk
           fail_on_unmatched_files: true

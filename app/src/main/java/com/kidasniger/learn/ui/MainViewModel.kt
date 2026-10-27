@@ -3,6 +3,7 @@ package com.kidasniger.learn.ui
 import android.app.Application
 import android.net.Uri
 import android.os.StatFs
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.kidasniger.learn.WhisperLib
@@ -69,12 +70,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         if (modelFile.exists()) {
-            _isBusy.value = true
-            engineExecutor.execute {
-                try {
-                    loadModelBlocking(modelFile)
-                } finally {
-                    _isBusy.value = false
+            if (modelFile.length() > MAX_MODEL_BYTES) {
+                _statusText.value =
+                    "Le modèle installé est trop lourd pour ce téléphone. Choisissez Tiny Q8 ou Base Q5."
+                _modelLoaded.value = false
+            } else {
+                _isBusy.value = true
+                engineExecutor.execute {
+                    try {
+                        loadModelBlocking(modelFile)
+                    } finally {
+                        _isBusy.value = false
+                    }
                 }
             }
         }
@@ -246,7 +253,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun checkModelSize(size: Long) {
         if (size > MAX_MODEL_BYTES) {
-            throw IOException("Le modèle dépasse la taille maximale autorisée (2 Go).")
+            throw IOException("Modèle trop lourd pour le mode téléphone. Choisissez Tiny Q8, Base Q5 ou Small Q5 (maximum 250 Mo).")
         }
     }
 
@@ -298,6 +305,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!file.isFile || file.length() < MIN_MODEL_BYTES) {
             _modelLoaded.value = false
             _statusText.value = "Modèle absent ou invalide. Sélectionnez ou téléchargez un modèle."
+            return false
+        }
+        if (file.length() > MAX_MODEL_BYTES) {
+            _modelLoaded.value = false
+            _statusText.value =
+                "Modèle trop lourd pour ce téléphone. Téléchargez Tiny Q8 ou Base Q5."
             return false
         }
 
@@ -393,18 +406,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+        val startedAt = SystemClock.elapsedRealtime()
         viewModelScope.launch {
             try {
                 val text = onEngine {
                     if (ctx == 0L) throw IllegalStateException("Le moteur Whisper n'est pas chargé.")
                     WhisperLib.transcribe(ctx, audio, lang, threads).trim()
                 }
+                val elapsedSeconds = (SystemClock.elapsedRealtime() - startedAt) / 1000.0
                 if (text.isBlank()) {
-                    _statusText.value = "Aucune parole détectée."
+                    _statusText.value =
+                        "Aucun texte obtenu. Parlez près du micro en français puis réessayez."
                 } else {
                     appendTranscriptionResult(text)
-                    _statusText.value = "Modèle prêt."
+                    _statusText.value = "Transcription terminée en " +
+                        String.format(java.util.Locale.getDefault(), "%.1f", elapsedSeconds) + " s."
                 }
             } catch (error: Exception) {
                 _statusText.value = "Erreur de transcription : " + safeMessage(error)
@@ -475,7 +492,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private const val MIN_MODEL_BYTES = 1_000_000L
-        private const val MAX_MODEL_BYTES = 2L * 1024L * 1024L * 1024L
+        private const val MAX_MODEL_BYTES = 250L * 1024L * 1024L
         private const val MIN_FREE_SPACE_BYTES = 32L * 1024L * 1024L
     }
 }

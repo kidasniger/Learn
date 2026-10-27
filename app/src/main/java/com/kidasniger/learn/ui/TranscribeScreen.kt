@@ -27,7 +27,7 @@ import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val SAMPLE_RATE = 16_000
-private const val MAX_RECORDING_SECONDS = 10 * 60
+private const val MAX_RECORDING_SECONDS = 2 * 60
 private const val MAX_AUDIO_SAMPLES = SAMPLE_RATE * MAX_RECORDING_SECONDS
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -126,20 +126,29 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                         onDismissRequest = { downloadMenuExpanded = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Modèle Q8 (Turbo, haute précision)") },
+                            text = { Text("Tiny Q8 — le plus rapide (~42 Mo)") },
                             onClick = {
                                 downloadMenuExpanded = false
                                 viewModel.downloadModel(
-                                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin?download=true"
+                                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q8_0.bin?download=true"
                                 )
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Modèle Q5 (Turbo, plus léger)") },
+                            text = { Text("Base Q5 — recommandé (~57 Mo)") },
                             onClick = {
                                 downloadMenuExpanded = false
                                 viewModel.downloadModel(
-                                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin?download=true"
+                                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin?download=true"
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Small Q5 — plus précis, plus lourd (~181 Mo)") },
+                            onClick = {
+                                downloadMenuExpanded = false
+                                viewModel.downloadModel(
+                                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin?download=true"
                                 )
                             }
                         )
@@ -332,7 +341,7 @@ private fun startRec(
             throw IllegalStateException("L'enregistrement n'a pas démarré.")
         }
         setRecorder(recorder)
-        viewModel.setStatus("Enregistrement en cours. Limite : 10 minutes.")
+        viewModel.setStatus("Enregistrement en cours. Limite : 2 minutes.")
 
         val threadHolder = ThreadReference()
         val thread = Thread({

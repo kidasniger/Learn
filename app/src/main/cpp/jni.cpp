@@ -71,17 +71,33 @@ Java_com_kidasniger_learn_WhisperLib_transcribe(
         params.n_threads = threads > 0 ? threads : 1;
         params.no_context = true;
 
-        if (whisper_full(context, params, samples, sampleCount) == 0) {
-            const int segments = whisper_full_n_segments(context);
-            for (int index = 0; index < segments; ++index) {
-                const char *segment = whisper_full_get_segment_text(context, index);
-                if (segment != nullptr) {
-                    output += segment;
-                }
+        whisper_reset_timings(context);
+        const int result = whisper_full(context, params, samples, sampleCount);
+        if (result != 0) {
+            env->ReleaseStringUTFChars(language, languageCode);
+            env->ReleaseFloatArrayElements(audio, samples, JNI_ABORT);
+            jclass exceptionClass = env->FindClass("java/lang/IllegalStateException");
+            if (exceptionClass != nullptr) {
+                env->ThrowNew(exceptionClass, "Whisper n'a pas pu traiter cet audio.");
+            }
+            return nullptr;
+        }
+
+        const int segments = whisper_full_n_segments(context);
+        for (int index = 0; index < segments; ++index) {
+            const char *segment = whisper_full_get_segment_text(context, index);
+            if (segment != nullptr) {
+                output += segment;
             }
         }
     } catch (...) {
-        output.clear();
+        env->ReleaseStringUTFChars(language, languageCode);
+        env->ReleaseFloatArrayElements(audio, samples, JNI_ABORT);
+        jclass exceptionClass = env->FindClass("java/lang/IllegalStateException");
+        if (exceptionClass != nullptr) {
+            env->ThrowNew(exceptionClass, "Erreur interne pendant la transcription.");
+        }
+        return nullptr;
     }
 
     env->ReleaseStringUTFChars(language, languageCode);

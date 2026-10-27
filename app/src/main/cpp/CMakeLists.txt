@@ -12,7 +12,7 @@ set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
     whisper
-    URL https://github.com/ggerganov/whisper.cpp/archive/refs/tags/v1.7.5.zip
+    URL https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.5.zip
 )
 FetchContent_MakeAvailable(whisper)
 
