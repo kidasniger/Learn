@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -13,6 +14,9 @@ interface TranscriptionDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTranscription(item: TranscriptionEntity)
+
+    @Update
+    suspend fun updateTranscription(item: TranscriptionEntity)
 
     @Query("DELETE FROM transcriptions WHERE id = :id")
     suspend fun deleteById(id: Long)
