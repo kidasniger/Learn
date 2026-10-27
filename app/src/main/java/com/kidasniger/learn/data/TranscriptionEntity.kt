@@ -14,5 +14,6 @@ data class TranscriptionEntity(
     @ColumnInfo(defaultValue = "0") val favorite: Boolean = false,
     @ColumnInfo(defaultValue = "'Général'") val folder: String = "Général",
     @ColumnInfo(defaultValue = "''") val notes: String = "",
-    @ColumnInfo(defaultValue = "''") val segments: String = ""
+    @ColumnInfo(defaultValue = "''") val segments: String = "",
+    @ColumnInfo(defaultValue = "0") val lastOpenedAt: Long = 0L
 )
