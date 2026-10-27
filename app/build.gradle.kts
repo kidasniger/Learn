@@ -4,6 +4,8 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val releaseStorePath = System.getenv("LEARN_KEYSTORE_PATH")
+
 android {
     namespace = "com.kidasniger.learn"
     compileSdk = 36
@@ -13,8 +15,9 @@ android {
         applicationId = "com.kidasniger.learn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "2.0.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
@@ -22,6 +25,24 @@ android {
             cmake {
                 arguments += listOf("-DCMAKE_BUILD_TYPE=Release")
             }
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            if (!releaseStorePath.isNullOrBlank()) {
+                storeFile = file(releaseStorePath)
+                storePassword = System.getenv("LEARN_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("LEARN_KEY_ALIAS")
+                keyPassword = System.getenv("LEARN_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
         }
     }
 
@@ -66,4 +87,8 @@ dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
+
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
