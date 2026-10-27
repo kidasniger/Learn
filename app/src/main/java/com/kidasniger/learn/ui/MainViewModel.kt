@@ -1,13 +1,22 @@
 package com.kidasniger.learn.ui
 
+import android.Manifest
 import android.app.Application
+import android.content.Context
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
 import android.net.Uri
 import android.os.StatFs
 import android.os.SystemClock
+import android.provider.OpenableColumns
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.kidasniger.learn.WhisperLib
 import com.kidasniger.learn.data.AppDatabase
+import com.kidasniger.learn.data.TranscriptFormats
+import com.kidasniger.learn.data.TranscriptSegment
 import com.kidasniger.learn.data.TranscriptionEntity
 import com.kidasniger.learn.data.TranscriptionRepository
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +33,9 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.Locale
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import kotlin.coroutines.resume
@@ -33,21 +45,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: TranscriptionRepository
     val transcriptions: StateFlow<List<TranscriptionEntity>>
 
-    // All native model operations are serialized on this executor.
     private val engineExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "whisper-engine").apply { isDaemon = true }
     }
+    private val preferences = application.getSharedPreferences("learn_preferences", Context.MODE_PRIVATE)
+    private val modelsDirectory = File(application.filesDir, "models").apply { mkdirs() }
+    private val legacyModelFile = File(application.filesDir, "model.bin")
+    private val pendingModelFile = File(application.filesDir, "model.bin.pending")
     private var ctx = 0L
-    private val lang = "fr"
+
+    private val _selectedModelName = MutableStateFlow(initialModelName())
+    val selectedModelName: StateFlow<String> = _selectedModelName
+
+    private val _availableModels = MutableStateFlow<List<String>>(emptyList())
+    val availableModels: StateFlow<List<String>> = _availableModels
+
+    private val _language = MutableStateFlow(preferences.getString("language", "auto") ?: "auto")
+    val language: StateFlow<String> = _language
+
+    private val _highAccuracy = MutableStateFlow(preferences.getBoolean("high_accuracy", false))
+    val highAccuracy: StateFlow<Boolean> = _highAccuracy
 
     val modelFile: File
-        get() = File(getApplication<Application>().filesDir, "model.bin")
-
-    private val pendingModelFile: File
-        get() = File(getApplication<Application>().filesDir, "model.bin.pending")
+        get() = fileForModel(_selectedModelName.value)
 
     private val _statusText = MutableStateFlow(
-        if (modelFile.exists()) "Vérification du modèle..." else "Aucun modèle chargé."
+        if (modelFile.isFile) "Vérification du modèle..." else "Téléchargez ou importez un modèle Whisper."
     )
     val statusText: StateFlow<String> = _statusText
 
@@ -57,8 +80,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentText = MutableStateFlow("")
     val currentText: StateFlow<String> = _currentText
 
+    private val _currentSegments = MutableStateFlow<List<TranscriptSegment>>(emptyList())
+    val currentSegments: StateFlow<List<TranscriptSegment>> = _currentSegments
+
+    private val _personalNotes = MutableStateFlow("")
+    val personalNotes: StateFlow<String> = _personalNotes
+
+    private val _analysisText = MutableStateFlow("")
+    val analysisText: StateFlow<String> = _analysisText
+
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy
+
+    private var textWasEdited = false
 
     init {
         val dao = AppDatabase.getDatabase(application).transcriptionDao()
@@ -68,17 +102,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
+        refreshAvailableModels()
 
-        if (modelFile.exists()) {
-            if (modelFile.length() > MAX_MODEL_BYTES) {
-                _statusText.value =
-                    "Le modèle installé est trop lourd pour ce téléphone. Choisissez Tiny Q8 ou Base Q5."
-                _modelLoaded.value = false
+        val initialFile = modelFile
+        if (initialFile.isFile) {
+            if (initialFile.length() > MAX_MODEL_BYTES) {
+                _statusText.value = "Le modèle sélectionné dépasse 250 Mo. Choisissez un modèle plus léger."
             } else {
                 _isBusy.value = true
                 engineExecutor.execute {
                     try {
-                        loadModelBlocking(modelFile)
+                        loadModelBlocking(initialFile)
                     } finally {
                         _isBusy.value = false
                     }
@@ -87,9 +121,120 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun importModel(uri: Uri, context: android.content.Context) {
-        if (!beginOperation("Copie du modèle...")) return
+    private fun initialModelName(): String {
+        val saved = preferences.getString("selected_model", null)
+        if (!saved.isNullOrBlank() && fileForModel(saved).isFile) return saved
+        if (legacyModelFile.isFile) return "model.bin"
+        return modelsDirectory.listFiles()
+            ?.filter { it.isFile && it.extension.equals("bin", ignoreCase = true) }
+            ?.sortedWith(modelSortOrder())
+            ?.firstOrNull()?.name ?: ""
+    }
 
+    private fun modelSortOrder(): Comparator<File> = compareBy<File> {
+        when {
+            it.name.contains("tiny", true) -> 0
+            it.name.contains("base", true) -> 1
+            it.name.contains("small", true) -> 2
+            else -> 3
+        }
+    }.thenBy { it.name.lowercase(Locale.ROOT) }
+
+    private fun fileForModel(name: String): File {
+        val safe = sanitizeModelName(name)
+        return if (safe == "model.bin") legacyModelFile else File(modelsDirectory, safe)
+    }
+
+    private fun sanitizeModelName(value: String): String {
+        val leaf = value.substringAfterLast('/').substringAfterLast('\\')
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .take(120)
+            .ifBlank { "imported-model.bin" }
+        return if (leaf.endsWith(".bin", ignoreCase = true)) leaf else "$leaf.bin"
+    }
+
+    private fun refreshAvailableModels() {
+        val names = mutableListOf<String>()
+        if (legacyModelFile.isFile && legacyModelFile.length() >= MIN_MODEL_BYTES) names += "model.bin"
+        names += modelsDirectory.listFiles()
+            ?.filter { it.isFile && it.extension.equals("bin", ignoreCase = true) && it.length() >= MIN_MODEL_BYTES }
+            ?.sortedWith(modelSortOrder())
+            ?.map { it.name }
+            .orEmpty()
+        _availableModels.value = names.distinct()
+        if (_selectedModelName.value !in names && names.isNotEmpty()) {
+            if (!_modelLoaded.value) _selectedModelName.value = names.first()
+        }
+    }
+
+    fun displayModelName(name: String): String {
+        val file = fileForModel(name)
+        val megabytes = if (file.isFile) file.length() / (1024L * 1024L) else 0L
+        return "$name · $megabytes Mo"
+    }
+
+    fun selectModel(name: String) {
+        if (name == _selectedModelName.value || name !in _availableModels.value) return
+        val candidateFile = fileForModel(name)
+        if (!candidateFile.isFile || candidateFile.length() > MAX_MODEL_BYTES) {
+            _statusText.value = "Ce modèle est absent ou trop volumineux."
+            return
+        }
+        if (!beginOperation("Chargement du modèle $name...")) return
+
+        viewModelScope.launch {
+            try {
+                val loaded = onEngine {
+                    val oldFile = modelFile
+                    freeNativeContext(ctx)
+                    ctx = 0L
+                    _modelLoaded.value = false
+                    val candidate = createNativeContext(candidateFile)
+                    if (candidate == 0L) {
+                        val restored = oldFile.isFile && oldFile.length() <= MAX_MODEL_BYTES
+                        ctx = if (restored) createNativeContext(oldFile) else 0L
+                        _modelLoaded.value = ctx != 0L
+                        _statusText.value = if (restored && ctx != 0L) {
+                            "Le nouveau modèle est invalide. L'ancien modèle est resté sélectionné."
+                        } else {
+                            "Impossible de charger ce modèle."
+                        }
+                        false
+                    } else {
+                        ctx = candidate
+                        _selectedModelName.value = name
+                        preferences.edit().putString("selected_model", name).apply()
+                        _modelLoaded.value = true
+                        _statusText.value = "Modèle prêt : $name"
+                        true
+                    }
+                }
+                if (loaded) refreshAvailableModels()
+            } catch (error: Exception) {
+                _statusText.value = "Erreur de chargement : ${safeMessage(error)}"
+            } finally {
+                _isBusy.value = false
+            }
+        }
+    }
+
+    fun deleteDownloadedModel(name: String) {
+        if (name == _selectedModelName.value) {
+            _statusText.value = "Sélectionnez d'abord un autre modèle avant de supprimer celui-ci."
+            return
+        }
+        val file = fileForModel(name)
+        if (!file.isFile || !file.delete()) {
+            _statusText.value = "Impossible de supprimer ce modèle."
+            return
+        }
+        refreshAvailableModels()
+        _statusText.value = "Modèle supprimé : $name"
+    }
+
+    fun importModel(uri: Uri, context: Context) {
+        if (!beginOperation("Copie du modèle...")) return
+        val name = sanitizeModelName(queryDisplayName(uri, context) ?: uri.lastPathSegment ?: "model.bin")
         viewModelScope.launch {
             var stagedFile: File? = null
             try {
@@ -98,12 +243,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 stagedFile = readyFile
                 _statusText.value = "Vérification et chargement du modèle..."
-                val installed = onEngine { installPendingModelBlocking(readyFile) }
-                if (!installed && !_modelLoaded.value) {
-                    _statusText.value = "Échec du chargement. Choisissez un fichier Whisper valide."
-                }
+                val installed = onEngine { installPendingModelBlocking(readyFile, name) }
+                if (installed) refreshAvailableModels()
+                else if (!_modelLoaded.value) _statusText.value = "Échec du chargement. Choisissez un fichier Whisper valide."
             } catch (error: Exception) {
-                _statusText.value = "Erreur d'importation : " + safeMessage(error)
+                _statusText.value = "Erreur d'importation : ${safeMessage(error)}"
             } catch (error: LinkageError) {
                 _statusText.value = "Moteur natif indisponible : bibliothèques manquantes."
             } finally {
@@ -115,22 +259,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun downloadModel(urlStr: String) {
+        val targetName = try {
+            sanitizeModelName(URL(urlStr).path.substringAfterLast('/'))
+        } catch (_: Exception) {
+            "imported-model.bin"
+        }
         if (!beginOperation("Préparation du téléchargement...")) return
 
         viewModelScope.launch {
             var stagedFile: File? = null
             try {
-                val readyFile = withContext(Dispatchers.IO) {
-                    downloadModelToPending(urlStr)
-                }
+                val readyFile = withContext(Dispatchers.IO) { downloadModelToPending(urlStr) }
                 stagedFile = readyFile
                 _statusText.value = "Vérification et chargement du modèle..."
-                val installed = onEngine { installPendingModelBlocking(readyFile) }
-                if (!installed && !_modelLoaded.value) {
-                    _statusText.value = "Échec du chargement. Le modèle téléchargé est invalide."
-                }
+                val installed = onEngine { installPendingModelBlocking(readyFile, targetName) }
+                if (installed) refreshAvailableModels()
+                else if (!_modelLoaded.value) _statusText.value = "Échec du chargement. Le modèle téléchargé est invalide."
             } catch (error: Exception) {
-                _statusText.value = "Erreur de téléchargement : " + safeMessage(error)
+                _statusText.value = "Erreur de téléchargement : ${safeMessage(error)}"
             } catch (error: LinkageError) {
                 _statusText.value = "Moteur natif indisponible : bibliothèques manquantes."
             } finally {
@@ -141,6 +287,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun queryDisplayName(uri: Uri, context: Context): String? {
+        return try {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (index >= 0) cursor.getString(index) else null
+                } else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun beginOperation(status: String): Boolean {
         if (_isBusy.value) return false
         _isBusy.value = true
@@ -148,12 +307,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
-    private suspend fun copyModelToPending(uri: Uri, context: android.content.Context): File {
+    private suspend fun copyModelToPending(uri: Uri, context: Context): File {
         val destination = pendingModelFile
         destination.delete()
         val input = context.contentResolver.openInputStream(uri)
             ?: throw IOException("Impossible d'ouvrir le fichier sélectionné.")
-
         try {
             input.use { source ->
                 destination.outputStream().buffered().use { output ->
@@ -180,41 +338,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun downloadModelToPending(urlStr: String): File {
         val url = URL(urlStr)
-        if (url.protocol != "https") {
-            throw IOException("Le téléchargement doit utiliser HTTPS.")
-        }
+        if (url.protocol != "https") throw IOException("Le téléchargement doit utiliser HTTPS.")
 
         val connection = (url.openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
-            readTimeout = 30_000
+            readTimeout = 45_000
             instanceFollowRedirects = true
             requestMethod = "GET"
         }
         val destination = pendingModelFile
         destination.delete()
-
         try {
             connection.connect()
             if (connection.responseCode !in 200..299) {
-                throw IOException("Le serveur a répondu HTTP " + connection.responseCode + ".")
+                throw IOException("Le serveur a répondu HTTP ${connection.responseCode}.")
             }
-            if (connection.url.protocol != "https") {
-                throw IOException("Redirection HTTPS non sécurisée.")
-            }
-
+            if (connection.url.protocol != "https") throw IOException("Redirection HTTPS non sécurisée.")
             val expectedLength = connection.contentLengthLong
-            if (expectedLength > MAX_MODEL_BYTES) {
-                throw IOException("Le fichier du modèle est trop volumineux.")
-            }
-            if (expectedLength > 0L) {
-                checkFreeSpace(expectedLength)
-            }
+            if (expectedLength > MAX_MODEL_BYTES) throw IOException("Le fichier du modèle est trop volumineux.")
+            if (expectedLength > 0L) checkFreeSpace(expectedLength)
 
             connection.inputStream.buffered().use { input ->
                 destination.outputStream().buffered().use { output ->
                     val buffer = ByteArray(64 * 1024)
                     var total = 0L
-                    var previousProgress = -1
+                    var previousProgress = -5
                     while (true) {
                         val count = input.read(buffer)
                         if (count < 0) break
@@ -223,24 +371,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         checkModelSize(total)
                         checkFreeSpace(count.toLong())
                         output.write(buffer, 0, count)
-
                         if (expectedLength > 0L) {
                             val progress = ((total * 100L) / expectedLength).toInt().coerceAtMost(100)
                             if (progress >= previousProgress + 5) {
                                 previousProgress = progress
-                                _statusText.value = "Téléchargement du modèle (" + progress + "%)..."
+                                _statusText.value = "Téléchargement du modèle ($progress%)..."
                             }
                         } else {
-                            _statusText.value = "Téléchargement du modèle (" + formatMegabytes(total) + " Mo)..."
+                            _statusText.value = "Téléchargement du modèle (${formatMegabytes(total)} Mo)..."
                         }
                     }
-
                     if (expectedLength > 0L && total != expectedLength) {
                         throw IOException("Téléchargement incomplet : taille reçue incorrecte.")
                     }
                 }
             }
-
             validateStagedModel(destination)
             return destination
         } catch (error: Exception) {
@@ -251,9 +396,370 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun installPendingModelBlocking(stagedFile: File, targetName: String): Boolean {
+        val previousName = _selectedModelName.value
+        val previousFile = fileForModel(previousName)
+        freeNativeContext(ctx)
+        ctx = 0L
+        _modelLoaded.value = false
+
+        val candidateContext = createNativeContext(stagedFile)
+        if (candidateContext == 0L) {
+            val restored = previousFile.isFile && previousFile.length() in MIN_MODEL_BYTES..MAX_MODEL_BYTES
+            ctx = if (restored) createNativeContext(previousFile) else 0L
+            _modelLoaded.value = ctx != 0L
+            _statusText.value = if (_modelLoaded.value) {
+                "Nouveau modèle invalide. L'ancien modèle a été restauré."
+            } else {
+                "Échec du chargement : fichier modèle invalide ou incompatible."
+            }
+            return false
+        }
+
+        val finalFile = fileForModel(targetName)
+        finalFile.parentFile?.mkdirs()
+        try {
+            Files.move(stagedFile.toPath(), finalFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } catch (error: Exception) {
+            freeNativeContext(candidateContext)
+            val restored = previousFile.isFile && previousFile.length() in MIN_MODEL_BYTES..MAX_MODEL_BYTES
+            ctx = if (restored) createNativeContext(previousFile) else 0L
+            _modelLoaded.value = ctx != 0L
+            _statusText.value = if (_modelLoaded.value) {
+                "Installation impossible. L'ancien modèle a été restauré."
+            } else {
+                "Installation impossible : ${safeMessage(error)}"
+            }
+            return false
+        }
+
+        ctx = candidateContext
+        _selectedModelName.value = targetName
+        preferences.edit().putString("selected_model", targetName).apply()
+        _modelLoaded.value = true
+        _statusText.value = "Modèle prêt : $targetName"
+        refreshAvailableModels()
+        return true
+    }
+
+    private fun createNativeContext(file: File): Long {
+        return try {
+            WhisperLib.initContext(file.absolutePath)
+        } catch (error: LinkageError) {
+            _statusText.value = "Moteur natif indisponible : bibliothèques manquantes."
+            0L
+        } catch (error: Exception) {
+            _statusText.value = "Erreur de lecture du modèle : ${safeMessage(error)}"
+            0L
+        }
+    }
+
+    private fun loadModelBlocking(file: File): Boolean {
+        _statusText.value = "Chargement du modèle..."
+        if (!file.isFile || file.length() < MIN_MODEL_BYTES || file.length() > MAX_MODEL_BYTES) {
+            _modelLoaded.value = false
+            _statusText.value = "Modèle absent, trop lourd ou invalide. Choisissez un modèle compatible."
+            return false
+        }
+        val loadedContext = createNativeContext(file)
+        if (loadedContext == 0L) {
+            _modelLoaded.value = false
+            if (!_statusText.value.startsWith("Moteur natif indisponible")) {
+                _statusText.value = "Échec du chargement : fichier modèle invalide ou incompatible."
+            }
+            return false
+        }
+        freeNativeContext(ctx)
+        ctx = loadedContext
+        _modelLoaded.value = true
+        _statusText.value = "Modèle prêt : ${file.name}"
+        return true
+    }
+
+    suspend fun <T> onEngine(block: () -> T): T =
+        suspendCancellableCoroutine { continuation ->
+            try {
+                engineExecutor.execute {
+                    if (!continuation.isActive) return@execute
+                    try {
+                        continuation.resume(block())
+                    } catch (error: Throwable) {
+                        continuation.resumeWithException(error)
+                    }
+                }
+            } catch (error: RejectedExecutionException) {
+                continuation.resumeWithException(error)
+            }
+        }
+
+    fun setLanguage(language: String) {
+        if (language !in SUPPORTED_LANGUAGES) return
+        _language.value = language
+        preferences.edit().putString("language", language).apply()
+    }
+
+    fun setHighAccuracy(enabled: Boolean) {
+        _highAccuracy.value = enabled
+        preferences.edit().putBoolean("high_accuracy", enabled).apply()
+    }
+
+    fun setCurrentText(text: String) {
+        _currentText.value = text
+        textWasEdited = true
+        _analysisText.value = ""
+    }
+
+    fun setPersonalNotes(notes: String) {
+        _personalNotes.value = notes
+    }
+
+    fun clearCurrentTranscription() {
+        _currentText.value = ""
+        _currentSegments.value = emptyList()
+        _analysisText.value = ""
+        textWasEdited = false
+    }
+
+    private fun exportableSegments(): List<TranscriptSegment> {
+        if (textWasEdited) {
+            val end = _currentSegments.value.lastOrNull()?.endMs?.coerceAtLeast(1_000L) ?: 1_000L
+            return if (_currentText.value.isBlank()) emptyList()
+            else listOf(TranscriptSegment(0L, end, _currentText.value.trim()))
+        }
+        return _currentSegments.value
+    }
+
+    fun currentExportSegments(): List<TranscriptSegment> = exportableSegments()
+
+    fun transcribeAudio(audio: FloatArray) {
+        if (audio.isEmpty()) {
+            _statusText.value = "Aucun audio à transcrire."
+            return
+        }
+        if (!_modelLoaded.value) {
+            _statusText.value = "Chargez un modèle avant de transcrire."
+            return
+        }
+        if (!beginOperation("Préparation de la transcription...")) return
+
+        val baseOffsetMs = _currentSegments.value.lastOrNull()?.endMs ?: 0L
+        val languageCode = _language.value
+        val accurate = _highAccuracy.value
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+        val startedAt = SystemClock.elapsedRealtime()
+        viewModelScope.launch {
+            try {
+                var producedText = false
+                var index = 0
+                val chunkSize = SAMPLE_RATE * CHUNK_SECONDS
+                val totalChunks = (audio.size + chunkSize - 1) / chunkSize
+                while (index < audio.size) {
+                    val end = (index + chunkSize).coerceAtMost(audio.size)
+                    val trimmed = TranscriptFormats.trimSilence(audio.copyOfRange(index, end))
+                    val chunkOffsetMs = baseOffsetMs + index.toLong() * 1000L / SAMPLE_RATE +
+                        trimmed.leadingSamples.toLong() * 1000L / SAMPLE_RATE
+                    if (trimmed.samples.isNotEmpty()) {
+                        _statusText.value = "Transcription progressive : segment ${index / chunkSize + 1}/$totalChunks..."
+                        val rows = onEngine {
+                            if (ctx == 0L) throw IllegalStateException("Le moteur Whisper n'est pas chargé.")
+                            WhisperLib.transcribeSegments(ctx, trimmed.samples, languageCode, threads, accurate)
+                        }
+                        producedText = appendNativeRows(rows, chunkOffsetMs) || producedText
+                    }
+                    index = end
+                }
+                val elapsed = (SystemClock.elapsedRealtime() - startedAt) / 1000.0
+                _statusText.value = if (producedText) {
+                    "Transcription terminée en ${String.format(Locale.getDefault(), "%.1f", elapsed)} s."
+                } else {
+                    "Aucune parole détectée. Vérifiez le microphone ou choisissez un modèle multilingue."
+                }
+            } catch (error: Exception) {
+                val root = if (error is ExecutionException) error.cause ?: error else error
+                _statusText.value = "Erreur de transcription : ${safeMessage(root)}"
+            } catch (error: LinkageError) {
+                _statusText.value = "Le moteur natif est indisponible."
+            } finally {
+                _isBusy.value = false
+            }
+        }
+    }
+
+    fun transcribeAudioFile(uri: Uri, context: Context) {
+        if (!_modelLoaded.value) {
+            _statusText.value = "Téléchargez ou sélectionnez un modèle avant d'importer un audio."
+            return
+        }
+        if (!beginOperation("Ouverture du fichier audio...")) return
+        clearCurrentTranscription()
+        val languageCode = _language.value
+        val accurate = _highAccuracy.value
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+        val startedAt = SystemClock.elapsedRealtime()
+
+        viewModelScope.launch {
+            try {
+                var completedChunks = 0
+                withContext(Dispatchers.IO) {
+                    AudioFileDecoder.decode(context.applicationContext, uri) { audio, startMs ->
+                        val trimmed = TranscriptFormats.trimSilence(audio)
+                        if (trimmed.samples.isNotEmpty()) {
+                            _statusText.value = "Transcription progressive du fichier : segment ${completedChunks + 1}..."
+                            val future = engineExecutor.submit(Callable {
+                                if (ctx == 0L) throw IllegalStateException("Le moteur Whisper n'est pas chargé.")
+                                WhisperLib.transcribeSegments(ctx, trimmed.samples, languageCode, threads, accurate)
+                            })
+                            val rows = future.get()
+                            appendNativeRows(
+                                rows,
+                                startMs + trimmed.leadingSamples.toLong() * 1000L / SAMPLE_RATE
+                            )
+                            completedChunks++
+                        }
+                    }
+                }
+                val elapsed = (SystemClock.elapsedRealtime() - startedAt) / 1000.0
+                _statusText.value = if (completedChunks > 0) {
+                    "Fichier traité par segments : $completedChunks segment(s), ${String.format(Locale.getDefault(), "%.1f", elapsed)} s."
+                } else {
+                    "Aucune parole détectée dans ce fichier audio."
+                }
+            } catch (error: Exception) {
+                val root = when (error) {
+                    is ExecutionException -> error.cause ?: error
+                    else -> error.cause ?: error
+                }
+                _statusText.value = "Import audio impossible : ${safeMessage(root)}"
+            } catch (error: LinkageError) {
+                _statusText.value = "Le moteur natif est indisponible."
+            } finally {
+                _isBusy.value = false
+            }
+        }
+    }
+
+    private fun appendNativeRows(rows: Array<String>, offsetMs: Long): Boolean {
+        val parsed = rows.mapNotNull { row ->
+            val parts = row.split('\u001f', limit = 3)
+            if (parts.size < 3) return@mapNotNull null
+            try {
+                val text = parts[2].trim()
+                if (text.isBlank()) return@mapNotNull null
+                TranscriptSegment(
+                    startMs = offsetMs + parts[0].toLong().coerceAtLeast(0L),
+                    endMs = offsetMs + parts[1].toLong().coerceAtLeast(parts[0].toLong() + 1L),
+                    text = text
+                )
+            } catch (_: Exception) {
+                null
+            }
+        }
+        if (parsed.isEmpty()) return false
+        _currentSegments.value = _currentSegments.value + parsed
+        if (!textWasEdited) _currentText.value = TranscriptFormats.plainText(_currentSegments.value)
+        _analysisText.value = ""
+        return true
+    }
+
+    fun analyzeCurrent(kind: String) {
+        val text = _currentText.value.trim()
+        if (text.isBlank()) {
+            _analysisText.value = "Transcrivez ou importez un audio avant de lancer cette analyse."
+            return
+        }
+        val result = when (kind) {
+            "summary" -> TranscriptFormats.summarize(text).ifBlank { "Aucune phrase exploitable." }
+            "ideas" -> TranscriptFormats.extractKeyIdeas(text).joinToString("\n") { "• $it" }
+            "tasks" -> TranscriptFormats.extractTasks(text).joinToString("\n") { "□ $it" }
+                .ifBlank { "Aucune formulation de tâche détectée. Cette extraction locale est indicative." }
+            else -> ""
+        }
+        _analysisText.value = when (kind) {
+            "summary" -> "Résumé automatique local (sélection de phrases, pas une génération IA)\n\n$result"
+            "ideas" -> "Idées principales candidates\n\n$result"
+            "tasks" -> "Tâches et décisions candidates\n\n$result"
+            else -> result
+        }
+    }
+
+    fun runDiagnostics(context: Context) {
+        val minBuffer = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+        val freeBytes = try {
+            StatFs(context.filesDir.absolutePath).availableBytes
+        } catch (_: Exception) { -1L }
+        val permission = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        val lines = listOf(
+            "Moteur Whisper : ${if (_modelLoaded.value) "chargé" else "non chargé"}",
+            "Modèle sélectionné : ${_selectedModelName.value.ifBlank { "aucun" }}",
+            "Microphone : ${if (minBuffer > 0) "format 16 kHz mono disponible" else "format 16 kHz non disponible"}",
+            "Autorisation microphone : ${if (permission) "accordée" else "à demander"}",
+            "Stockage libre : ${if (freeBytes >= 0) "${freeBytes / (1024L * 1024L)} Mo" else "indisponible"}"
+        )
+        _statusText.value = lines.joinToString("\n")
+    }
+
+    fun saveCurrentTranscription(title: String, folder: String = "Général", notes: String = _personalNotes.value) {
+        val text = _currentText.value.trim()
+        if (text.isBlank()) return
+        val parts = exportableSegments()
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.insert(
+                TranscriptionEntity(
+                    title = title.ifBlank {
+                        "Transcription " + java.text.SimpleDateFormat(
+                            "dd/MM/yyyy HH:mm",
+                            Locale.getDefault()
+                        ).format(java.util.Date())
+                    },
+                    text = text,
+                    language = _language.value,
+                    favorite = false,
+                    folder = folder.trim().ifBlank { "Général" },
+                    notes = notes.trim(),
+                    segments = TranscriptFormats.serialize(parts)
+                )
+            )
+        }
+    }
+
+    fun loadTranscription(item: TranscriptionEntity) {
+        _currentText.value = item.text
+        _currentSegments.value = TranscriptFormats.deserialize(item.segments).ifEmpty {
+            if (item.text.isBlank()) emptyList() else listOf(TranscriptSegment(0, 1_000, item.text))
+        }
+        _personalNotes.value = item.notes
+        _analysisText.value = ""
+        textWasEdited = false
+        setLanguage(item.language.takeIf { it in SUPPORTED_LANGUAGES } ?: "auto")
+        _statusText.value = "Transcription ouverte : ${item.title}"
+    }
+
+    fun toggleFavorite(item: TranscriptionEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.update(item.copy(favorite = !item.favorite))
+        }
+    }
+
+    fun deleteTranscription(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) { repository.delete(id) }
+    }
+
+    fun clearHistory() {
+        viewModelScope.launch(Dispatchers.IO) { repository.deleteAll() }
+    }
+
+    fun setStatus(msg: String) {
+        _statusText.value = msg
+    }
+
     private fun checkModelSize(size: Long) {
         if (size > MAX_MODEL_BYTES) {
-            throw IOException("Modèle trop lourd pour le mode téléphone. Choisissez Tiny Q8, Base Q5 ou Small Q5 (maximum 250 Mo).")
+            throw IOException("Modèle trop volumineux pour cette application (maximum 250 Mo).")
         }
     }
 
@@ -272,208 +778,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun formatMegabytes(bytes: Long): Long = bytes / (1024L * 1024L)
 
-    private suspend fun <T> onEngine(block: () -> T): T =
-        suspendCancellableCoroutine { continuation ->
-            try {
-                engineExecutor.execute {
-                    if (!continuation.isActive) return@execute
-                    try {
-                        continuation.resume(block())
-                    } catch (error: Throwable) {
-                        continuation.resumeWithException(error)
-                    }
-                }
-            } catch (error: RejectedExecutionException) {
-                continuation.resumeWithException(error)
-            }
-        }
-
-    private fun createNativeContext(file: File): Long {
-        return try {
-            WhisperLib.initContext(file.absolutePath)
-        } catch (error: LinkageError) {
-            _statusText.value = "Moteur natif indisponible : bibliothèques manquantes."
-            0L
-        } catch (error: Exception) {
-            _statusText.value = "Erreur de lecture du modèle : " + safeMessage(error)
-            0L
-        }
-    }
-
-    private fun loadModelBlocking(file: File): Boolean {
-        _statusText.value = "Chargement du modèle..."
-        if (!file.isFile || file.length() < MIN_MODEL_BYTES) {
-            _modelLoaded.value = false
-            _statusText.value = "Modèle absent ou invalide. Sélectionnez ou téléchargez un modèle."
-            return false
-        }
-        if (file.length() > MAX_MODEL_BYTES) {
-            _modelLoaded.value = false
-            _statusText.value =
-                "Modèle trop lourd pour ce téléphone. Téléchargez Tiny Q8 ou Base Q5."
-            return false
-        }
-
-        val loadedContext = createNativeContext(file)
-        if (loadedContext == 0L) {
-            _modelLoaded.value = false
-            if (!_statusText.value.startsWith("Moteur natif indisponible")) {
-                _statusText.value = "Échec du chargement : fichier modèle invalide ou incompatible."
-            }
-            return false
-        }
-
-        freeNativeContext(ctx)
-        ctx = loadedContext
-        _modelLoaded.value = true
-        _statusText.value = "Modèle prêt."
-        return true
-    }
-
-    private fun installPendingModelBlocking(stagedFile: File): Boolean {
-        val hadPreviousModel = modelFile.isFile && modelFile.length() >= MIN_MODEL_BYTES
-
-        // Release the old native context before loading another large model to avoid
-        // holding two model copies in memory at the same time.
-        freeNativeContext(ctx)
-        ctx = 0L
-        _modelLoaded.value = false
-
-        val candidateContext = createNativeContext(stagedFile)
-        if (candidateContext == 0L) {
-            val restored = hadPreviousModel && loadModelBlocking(modelFile)
-            _statusText.value = if (restored) {
-                "Nouveau modèle invalide. L'ancien modèle a été restauré."
-            } else {
-                "Échec du chargement : fichier modèle invalide ou incompatible."
-            }
-            return false
-        }
-
-        try {
-            Files.move(
-                stagedFile.toPath(),
-                modelFile.toPath(),
-                StandardCopyOption.REPLACE_EXISTING
-            )
-        } catch (error: Exception) {
-            freeNativeContext(candidateContext)
-            val restored = hadPreviousModel && loadModelBlocking(modelFile)
-            _statusText.value = if (restored) {
-                "Installation impossible. L'ancien modèle a été restauré."
-            } else {
-                "Installation impossible : " + safeMessage(error)
-            }
-            return false
-        }
-
-        ctx = candidateContext
-        _modelLoaded.value = true
-        _statusText.value = "Modèle prêt."
-        return true
-    }
-
     private fun freeNativeContext(pointer: Long) {
         if (pointer == 0L) return
         try {
             WhisperLib.freeContext(pointer)
         } catch (_: LinkageError) {
-            // The native library may not have loaded; there is then nothing safe to free.
         } catch (_: Exception) {
-            // Cleanup must not crash the application.
         }
-    }
-
-    fun appendTranscriptionResult(newText: String) {
-        if (newText.isBlank()) return
-        val current = _currentText.value
-        _currentText.value = if (current.isEmpty()) newText else current + "\n\n" + newText
-    }
-
-    fun transcribeAudio(audio: FloatArray, onDone: () -> Unit) {
-        if (audio.isEmpty()) {
-            _statusText.value = "Aucun audio à transcrire."
-            onDone()
-            return
-        }
-        if (!_modelLoaded.value) {
-            _statusText.value = "Chargez un modèle avant de transcrire."
-            onDone()
-            return
-        }
-        if (!beginOperation("Transcription en cours...")) {
-            onDone()
-            return
-        }
-
-        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
-        val startedAt = SystemClock.elapsedRealtime()
-        viewModelScope.launch {
-            try {
-                val text = onEngine {
-                    if (ctx == 0L) throw IllegalStateException("Le moteur Whisper n'est pas chargé.")
-                    WhisperLib.transcribe(ctx, audio, lang, threads).trim()
-                }
-                val elapsedSeconds = (SystemClock.elapsedRealtime() - startedAt) / 1000.0
-                if (text.isBlank()) {
-                    _statusText.value =
-                        "Aucun texte obtenu. Parlez près du micro en français puis réessayez."
-                } else {
-                    appendTranscriptionResult(text)
-                    _statusText.value = "Transcription terminée en " +
-                        String.format(java.util.Locale.getDefault(), "%.1f", elapsedSeconds) + " s."
-                }
-            } catch (error: Exception) {
-                _statusText.value = "Erreur de transcription : " + safeMessage(error)
-            } catch (error: LinkageError) {
-                _statusText.value = "Le moteur natif est indisponible."
-            } finally {
-                _isBusy.value = false
-                onDone()
-            }
-        }
-    }
-
-    fun saveCurrentTranscription(title: String) {
-        val text = _currentText.value
-        if (text.isBlank()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            repository.insert(
-                TranscriptionEntity(
-                    title = if (title.isBlank()) {
-                        "Transcription " + java.text.SimpleDateFormat(
-                            "dd/MM/yyyy HH:mm",
-                            java.util.Locale.getDefault()
-                        ).format(java.util.Date())
-                    } else {
-                        title
-                    },
-                    text = text,
-                    language = lang
-                )
-            )
-        }
-    }
-
-    fun deleteTranscription(id: Long) {
-        viewModelScope.launch(Dispatchers.IO) {
-            repository.delete(id)
-        }
-    }
-
-    fun clearHistory() {
-        viewModelScope.launch(Dispatchers.IO) {
-            repository.deleteAll()
-        }
-    }
-
-    fun setStatus(msg: String) {
-        _statusText.value = msg
     }
 
     private fun safeMessage(error: Throwable): String {
         val message = error.message
-        return if (message.isNullOrBlank()) "erreur inconnue" else message.take(180)
+        return if (message.isNullOrBlank()) error.javaClass.simpleName.ifBlank { "erreur inconnue" }
+        else message.take(180)
     }
 
     override fun onCleared() {
@@ -482,7 +799,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 freeNativeContext(ctx)
                 ctx = 0L
             }
-            // Queued work finishes before the cleanup task; no native call races with freeContext.
             engineExecutor.shutdown()
         } catch (_: RejectedExecutionException) {
             engineExecutor.shutdown()
@@ -491,8 +807,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
+        private const val SAMPLE_RATE = 16_000
+        private const val CHUNK_SECONDS = 30
         private const val MIN_MODEL_BYTES = 1_000_000L
         private const val MAX_MODEL_BYTES = 250L * 1024L * 1024L
         private const val MIN_FREE_SPACE_BYTES = 32L * 1024L * 1024L
+        val SUPPORTED_LANGUAGES = linkedSetOf("auto", "fr", "en", "es", "de", "pt", "ar", "ha", "sw")
     }
 }
