@@ -12,7 +12,8 @@ Learn est une application Android de transcription locale fondée sur [whisper.c
 - Choisir la détection automatique ou une langue précise (français, anglais, espagnol, allemand, portugais, arabe, haoussa et swahili). Les résultats varient selon le modèle et la qualité audio ; chaque combinaison de langue et d'appareil doit encore être évaluée.
 - Traduire la transcription avec ML Kit vers une langue cible prise en charge. Le modèle source/cible est téléchargé au premier usage et conservé localement ; la traduction se fait ensuite sur l'appareil. La langue source est détectée automatiquement si le mode de transcription était réglé sur « auto ».
 - Choisir le mode rapide ou le mode haute précision.
-- Rechercher dans les transcriptions sauvegardées, classer les éléments par dossier/cours/réunion, ajouter des favoris et des commentaires personnels ; confirmer les suppressions.
+- Rechercher dans les transcriptions sauvegardées, classer les éléments par dossier/cours/réunion, ajouter des favoris et des commentaires personnels, prioriser les éléments récemment ouverts ; confirmer les suppressions.
+- Récupérer le brouillon local de texte, segments horodatés et notes après fermeture normale de l'application ou recréation du ViewModel.
 - Obtenir un résumé de sélection de phrases, des idées clés candidates, des tâches candidates et des fiches de révision au moyen de règles locales simples.
 - Lancer un test du moteur avec l'audio anglais de démonstration de whisper.cpp (téléchargement Internet requis).
 - Utiliser le mode sombre, la vérification de stockage et un diagnostic du microphone, des autorisations et du chargement de Whisper.
@@ -50,5 +51,5 @@ Ne pas committer le keystore ni son mot de passe dans le dépôt. L'activation d
 - Le détecteur de silence supprime les blocs silencieux et réduit les silences aux bords des blocs ; il ne supprime pas encore tous les silences internes d'un long passage.
 - Les résumés, idées et tâches sont des extractions heuristiques locales, pas une génération par un modèle d'IA.
 - La traduction dépend des langues prises en charge par ML Kit et du téléchargement préalable du modèle de langue. Elle ne fonctionne pas pour toutes les langues détectées par Whisper.
-- La restauration d'un enregistrement micro non sauvegardé après fermeture forcée n'est pas encore fournie. Le test de démonstration télécharge un court extrait anglais de whisper.cpp et nécessite Internet.
+- Le brouillon écrit est récupéré après fermeture/recréation ; les échantillons audio bruts d'un enregistrement micro interrompu par un arrêt forcé ne sont pas conservés. Le test de démonstration télécharge un court extrait anglais de whisper.cpp et nécessite Internet.
 - Le workflow de production est prêt pour une signature protégée, mais aucune release de production ne doit être publiée tant que les secrets de signature ne sont pas configurés et que la build de release n'a pas été vérifiée sur l'appareil cible.
