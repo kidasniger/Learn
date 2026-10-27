@@ -47,6 +47,7 @@ import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -77,6 +78,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val legacyModelFile = File(application.filesDir, "model.bin")
     private val pendingModelFile = File(application.filesDir, "model.bin.pending")
     private var ctx = 0L
+    private val pendingLiveChunks = AtomicInteger(0)
 
     private val _selectedModelName = MutableStateFlow(initialModelName())
     val selectedModelName: StateFlow<String> = _selectedModelName
@@ -603,6 +605,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun currentExportSegments(): List<TranscriptSegment> = exportableSegments()
+
+    fun currentTimelineEndMs(): Long = _currentSegments.value.lastOrNull()?.endMs ?: 0L
+
+    /**
+     * Processes a captured microphone chunk while recording continues. The recorder keeps
+     * collecting into bounded 30-second windows; native inference is serialized on the engine
+     * executor, and each completed window is appended to the visible transcript.
+     */
+    fun transcribeLiveChunk(audio: FloatArray, baseOffsetMs: Long) {
+        if (audio.isEmpty()) return
+        if (!_modelLoaded.value) {
+            _statusText.value = "Le moteur Whisper n'est pas chargé."
+            return
+        }
+
+        val trimmed = TranscriptFormats.trimSilence(audio)
+        if (trimmed.samples.isEmpty()) {
+            _statusText.value = "Silence ignoré ; l'enregistrement continue."
+            return
+        }
+
+        val chunkOffsetMs = baseOffsetMs +
+            trimmed.leadingSamples.toLong() * 1000L / SAMPLE_RATE
+        val languageCode = _language.value
+        val accurate = _highAccuracy.value
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+        val chunkNumber = pendingLiveChunks.incrementAndGet()
+        _isBusy.value = true
+        _statusText.value = "Transcription en direct : segment en cours ($chunkNumber en attente)..."
+
+        viewModelScope.launch {
+            try {
+                val rows = onEngine {
+                    if (ctx == 0L) throw IllegalStateException("Le moteur Whisper n'est pas chargé.")
+                    WhisperLib.transcribeSegments(ctx, trimmed.samples, languageCode, threads, accurate)
+                }
+                if (appendNativeRows(rows, chunkOffsetMs)) {
+                    _statusText.value = "Transcription en direct mise à jour. L'enregistrement continue."
+                } else {
+                    _statusText.value = "Segment traité ; aucune parole détectée. L'enregistrement continue."
+                }
+            } catch (error: Exception) {
+                val root = if (error is ExecutionException) error.cause ?: error else error
+                _statusText.value = "Erreur sur le segment en direct : ${safeMessage(root)}"
+            } catch (error: LinkageError) {
+                _statusText.value = "Le moteur natif est indisponible."
+            } finally {
+                if (pendingLiveChunks.decrementAndGet() <= 0) {
+                    pendingLiveChunks.set(0)
+                    _isBusy.value = false
+                }
+            }
+        }
+    }
 
     fun transcribeAudio(audio: FloatArray) {
         if (audio.isEmpty()) {
