@@ -47,7 +47,7 @@ fun HistoryScreen(
                     item.text.contains(query, ignoreCase = true) ||
                     item.folder.contains(query, ignoreCase = true) ||
                     item.notes.contains(query, ignoreCase = true))
-        }
+        }.sortedByDescending { maxOf(it.lastOpenedAt, it.timestamp) }
     }
 
     Scaffold(
