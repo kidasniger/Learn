@@ -9,6 +9,10 @@ class TranscriptionRepository(private val dao: TranscriptionDao) {
         dao.insertTranscription(transcription)
     }
 
+    suspend fun update(transcription: TranscriptionEntity) {
+        dao.updateTranscription(transcription)
+    }
+
     suspend fun delete(id: Long) {
         dao.deleteById(id)
     }
