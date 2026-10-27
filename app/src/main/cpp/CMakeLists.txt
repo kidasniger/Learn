@@ -12,9 +12,7 @@ set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
     whisper
-    GIT_REPOSITORY https://github.com/ggerganov/whisper.cpp.git
-    GIT_TAG v1.7.5
-    GIT_SHALLOW TRUE
+    URL https://github.com/ggerganov/whisper.cpp/archive/refs/tags/v1.7.5.zip
 )
 FetchContent_MakeAvailable(whisper)
 
