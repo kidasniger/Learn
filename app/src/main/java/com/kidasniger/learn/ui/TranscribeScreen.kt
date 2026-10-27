@@ -64,6 +64,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
     var showSubtitles by remember { mutableStateOf(false) }
     var showNotes by remember { mutableStateOf(false) }
     var showModelDeleteConfirmation by remember { mutableStateOf(false) }
+    var modelToDelete by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -73,8 +74,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
     val pausedFlag = remember { AtomicBoolean(false) }
     val chunks = remember { Collections.synchronizedList(ArrayList<ShortArray>()) }
 
-    var pendingExportFormat by remember { mutableStateOf("txt") }
-
+    
     val modelImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.importModel(uri, context)
     }
@@ -107,30 +107,6 @@ fun TranscribeScreen(viewModel: MainViewModel) {
         }
     }
 
-    fun startRecordingNow() {
-        if (isBusy || recording) return
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            recordingFinalized.set(false)
-            pausedFlag.set(false)
-            recordingPaused = false
-            recording = true
-            chunks.clear()
-            startRec(
-                viewModel,
-                { recorderInstance = it },
-                { recordingThread = it },
-                chunks,
-                recordingFinalized,
-                pausedFlag
-            ) { recording = it }
-        } else {
-            micPermissionLauncherLaunch(context, viewModel, recordingFinalized, pausedFlag, chunks,
-                { recorderInstance = it }, { recordingThread = it }, { recording = it })
-        }
-    }
-
     val micPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -152,6 +128,31 @@ fun TranscribeScreen(viewModel: MainViewModel) {
             viewModel.setStatus("Permission microphone refusée.")
         }
     }
+
+    fun startRecordingNow() {
+        if (isBusy || recording) return
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            recordingFinalized.set(false)
+            pausedFlag.set(false)
+            recordingPaused = false
+            recording = true
+            chunks.clear()
+            startRec(
+                viewModel,
+                { recorderInstance = it },
+                { recordingThread = it },
+                chunks,
+                recordingFinalized,
+                pausedFlag
+            ) { recording = it }
+        } else {
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -522,8 +523,11 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 TextButton(
-                    onClick = { showModelDeleteConfirmation = true },
-                    enabled = !isBusy && !recording && selectedModel.isNotBlank() && selectedModel != "model.bin"
+                    onClick = {
+                        modelToDelete = modelNames.firstOrNull { it != selectedModel && it != "model.bin" }.orEmpty()
+                        showModelDeleteConfirmation = modelToDelete.isNotBlank()
+                    },
+                    enabled = !isBusy && !recording && modelNames.any { it != selectedModel && it != "model.bin" }
                 ) { Text("Supprimer le modèle sélectionné") }
             }
         }
@@ -533,10 +537,10 @@ fun TranscribeScreen(viewModel: MainViewModel) {
         AlertDialog(
             onDismissRequest = { showModelDeleteConfirmation = false },
             title = { Text("Supprimer ce modèle ?") },
-            text = { Text("Le fichier du modèle « $selectedModel » sera supprimé du stockage local. Cette action ne supprime pas les transcriptions.") },
+            text = { Text("Le fichier du modèle « $modelToDelete » sera supprimé du stockage local. Cette action ne supprime pas les transcriptions.") },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.deleteDownloadedModel(selectedModel)
+                    viewModel.deleteDownloadedModel(modelToDelete)
                     showModelDeleteConfirmation = false
                 }) { Text("Supprimer", color = MaterialTheme.colorScheme.error) }
             },
@@ -638,20 +642,6 @@ private fun formatTimestamp(milliseconds: Long): String {
     return String.format(Locale.ROOT, "%02d:%02d:%02d", hours, minutes, seconds)
 }
 
-private fun micPermissionLauncherLaunch(
-    context: android.content.Context,
-    viewModel: MainViewModel,
-    finalized: AtomicBoolean,
-    paused: AtomicBoolean,
-    chunks: MutableList<ShortArray>,
-    setRecorder: (AudioRecord?) -> Unit,
-    setThread: (Thread?) -> Unit,
-    setState: (Boolean) -> Unit
-) {
-    // This branch is only used when the permission had not been granted. The launcher
-    // is owned by TranscribeScreen; request permission through the current Activity.
-    viewModel.setStatus("Accordez l'autorisation du microphone pour commencer à enregistrer.")
-}
 
 private fun startRec(
     viewModel: MainViewModel,
