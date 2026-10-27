@@ -54,7 +54,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
         if (granted) {
             recording = true
             chunks.clear()
-            startRec(context, viewModel, { rec -> recorderInstance = rec }, { t -> recordingThread = t }, chunks) { recording = it }
+            startRec(viewModel, { rec -> recorderInstance = rec }, { t -> recordingThread = t }, chunks) { recording = it }
         } else {
             viewModel.setStatus("Permission micro refusée.")
         }
@@ -142,7 +142,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                                 recording = true
                                 chunks.clear()
-                                startRec(context, viewModel, { rec -> recorderInstance = rec }, { t -> recordingThread = t }, chunks) { recording = it }
+                                startRec(viewModel, { rec -> recorderInstance = rec }, { t -> recordingThread = t }, chunks) { recording = it }
                             } else {
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
@@ -233,7 +233,6 @@ fun TranscribeScreen(viewModel: MainViewModel) {
 }
 
 private fun startRec(
-    context: Context,
     viewModel: MainViewModel,
     setRecorder: (AudioRecord?) -> Unit,
     setThread: (Thread?) -> Unit,
