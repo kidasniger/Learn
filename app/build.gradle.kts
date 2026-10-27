@@ -1,20 +1,7 @@
-import java.util.Base64
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.google.devtools.ksp")
-}
-
-val keystoreFile = file("${rootDir}/debug.keystore")
-if (!keystoreFile.exists()) {
-    val base64File = file("${rootDir}/debug.keystore.base64")
-    if (base64File.exists()) {
-        try {
-            val bytes = Base64.getDecoder().decode(base64File.readText().trim())
-            keystoreFile.writeBytes(bytes)
-        } catch (_: Exception) {}
-    }
 }
 
 android {
@@ -27,21 +14,6 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
-    }
-
-    signingConfigs {
-        getByName("debug") {
-            storeFile = keystoreFile
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
-        }
-    }
-
-    buildTypes {
-        debug {
-            signingConfig = signingConfigs.getByName("debug")
-        }
     }
 
     compileOptions {
