@@ -1,10 +1,14 @@
 package com.kidasniger.learn.ui
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.speech.tts.TextToSpeech
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -20,14 +24,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.kidasniger.learn.data.TranscriptSegment
 import kotlinx.coroutines.launch
 import java.util.Collections
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val SAMPLE_RATE = 16_000
-private const val MAX_RECORDING_SECONDS = 2 * 60
+private const val MAX_RECORDING_SECONDS = 5 * 60
 private const val MAX_AUDIO_SAMPLES = SAMPLE_RATE * MAX_RECORDING_SECONDS
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -37,37 +44,109 @@ fun TranscribeScreen(viewModel: MainViewModel) {
     val statusText by viewModel.statusText.collectAsState()
     val modelLoaded by viewModel.modelLoaded.collectAsState()
     val currentText by viewModel.currentText.collectAsState()
+    val currentSegments by viewModel.currentSegments.collectAsState()
+    val modelNames by viewModel.availableModels.collectAsState()
+    val selectedModel by viewModel.selectedModelName.collectAsState()
+    val language by viewModel.language.collectAsState()
+    val highAccuracy by viewModel.highAccuracy.collectAsState()
+    val personalNotes by viewModel.personalNotes.collectAsState()
+    val analysisText by viewModel.analysisText.collectAsState()
     val isBusy by viewModel.isBusy.collectAsState()
 
     var recording by remember { mutableStateOf(false) }
+    var recordingPaused by remember { mutableStateOf(false) }
     var saveDialogShown by remember { mutableStateOf(false) }
     var saveTitle by remember { mutableStateOf("") }
-    var downloadMenuExpanded by remember { mutableStateOf(false) }
+    var saveFolder by remember { mutableStateOf("Général") }
+    var saveNotes by remember { mutableStateOf("") }
+    var modelMenuExpanded by remember { mutableStateOf(false) }
+    var languageMenuExpanded by remember { mutableStateOf(false) }
+    var showSubtitles by remember { mutableStateOf(false) }
+    var showNotes by remember { mutableStateOf(false) }
+    var showModelDeleteConfirmation by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
     var recorderInstance by remember { mutableStateOf<AudioRecord?>(null) }
     var recordingThread by remember { mutableStateOf<Thread?>(null) }
     val recordingFinalized = remember { AtomicBoolean(true) }
+    val pausedFlag = remember { AtomicBoolean(false) }
     val chunks = remember { Collections.synchronizedList(ArrayList<ShortArray>()) }
 
-    val pickModelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            viewModel.importModel(uri, context)
+    var pendingExportFormat by remember { mutableStateOf("txt") }
+
+    val modelImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) viewModel.importModel(uri, context)
+    }
+    val audioImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) viewModel.transcribeAudioFile(uri, context)
+    }
+    val txtExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) writeExport(uri, "txt", viewModel, context, currentText, currentSegments, scope, snackbarHostState)
+    }
+    val pdfExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
+        if (uri != null) writeExport(uri, "pdf", viewModel, context, currentText, currentSegments, scope, snackbarHostState)
+    }
+    val srtExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-subrip")) { uri ->
+        if (uri != null) writeExport(uri, "srt", viewModel, context, currentText, currentSegments, scope, snackbarHostState)
+    }
+    val vttExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/vtt")) { uri ->
+        if (uri != null) writeExport(uri, "vtt", viewModel, context, currentText, currentSegments, scope, snackbarHostState)
+    }
+
+    var speechEngine by remember { mutableStateOf<TextToSpeech?>(null) }
+    DisposableEffect(context) {
+        val engine = TextToSpeech(context) { status ->
+            if (status != TextToSpeech.SUCCESS) viewModel.setStatus("Synthèse vocale indisponible sur cet appareil.")
+        }
+        speechEngine = engine
+        onDispose {
+            try { engine.stop() } catch (_: Exception) { }
+            engine.shutdown()
+            speechEngine = null
         }
     }
 
-    val micPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) {
+    fun startRecordingNow() {
+        if (isBusy || recording) return
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
             recordingFinalized.set(false)
+            pausedFlag.set(false)
+            recordingPaused = false
             recording = true
             chunks.clear()
             startRec(
                 viewModel,
-                { rec -> recorderInstance = rec },
-                { thread -> recordingThread = thread },
+                { recorderInstance = it },
+                { recordingThread = it },
                 chunks,
-                recordingFinalized
+                recordingFinalized,
+                pausedFlag
+            ) { recording = it }
+        } else {
+            micPermissionLauncherLaunch(context, viewModel, recordingFinalized, pausedFlag, chunks,
+                { recorderInstance = it }, { recordingThread = it }, { recording = it })
+        }
+    }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            recordingFinalized.set(false)
+            pausedFlag.set(false)
+            recordingPaused = false
+            recording = true
+            chunks.clear()
+            startRec(
+                viewModel,
+                { recorderInstance = it },
+                { recordingThread = it },
+                chunks,
+                recordingFinalized,
+                pausedFlag
             ) { recording = it }
         } else {
             viewModel.setStatus("Permission microphone refusée.")
@@ -78,10 +157,15 @@ fun TranscribeScreen(viewModel: MainViewModel) {
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("Transcription audio (Whisper)") },
+                title = { Text("Learn 2.0") },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
+                ),
+                actions = {
+                    TextButton(onClick = { viewModel.runDiagnostics(context) }, enabled = !isBusy && !recording) {
+                        Text("Diagnostic")
+                    }
+                }
             )
         }
     ) { padding ->
@@ -89,207 +173,484 @@ fun TranscribeScreen(viewModel: MainViewModel) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp)
+                .padding(horizontal = 12.dp, vertical = 10.dp)
                 .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
+            Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
+                    modifier = Modifier.padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("Statut du moteur", style = MaterialTheme.typography.titleMedium)
+                    Text("Moteur et modèle", style = MaterialTheme.typography.titleMedium)
                     Text(statusText, style = MaterialTheme.typography.bodyMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            OutlinedButton(
+                                onClick = { modelMenuExpanded = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = !isBusy && !recording
+                            ) {
+                                Text(
+                                    if (selectedModel.isBlank()) "Choisir un modèle"
+                                    else "Modèle : ${selectedModel.take(24)}",
+                                    maxLines = 1
+                                )
+                            }
+                            DropdownMenu(expanded = modelMenuExpanded, onDismissRequest = { modelMenuExpanded = false }) {
+                                modelNames.forEach { name ->
+                                    DropdownMenuItem(
+                                        text = { Text((if (name == selectedModel) "✓ " else "") + viewModel.displayModelName(name)) },
+                                        onClick = {
+                                            modelMenuExpanded = false
+                                            viewModel.selectModel(name)
+                                        }
+                                    )
+                                }
+                                if (modelNames.isNotEmpty()) HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Télécharger Tiny Q8 — rapide (~42 Mo)") },
+                                    onClick = {
+                                        modelMenuExpanded = false
+                                        viewModel.downloadModel("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q8_0.bin?download=true")
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Télécharger Base Q5 — équilibré (~57 Mo)") },
+                                    onClick = {
+                                        modelMenuExpanded = false
+                                        viewModel.downloadModel("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin?download=true")
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Télécharger Small Q5 — plus lourd (~181 Mo)") },
+                                    onClick = {
+                                        modelMenuExpanded = false
+                                        viewModel.downloadModel("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin?download=true")
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Importer un modèle .bin") },
+                                    onClick = {
+                                        modelMenuExpanded = false
+                                        modelImportLauncher.launch(arrayOf("*/*"))
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Langue", modifier = Modifier.padding(end = 8.dp))
+                        Box {
+                            OutlinedButton(onClick = { languageMenuExpanded = true }, enabled = !isBusy && !recording) {
+                                Text(languageLabel(language))
+                            }
+                            DropdownMenu(expanded = languageMenuExpanded, onDismissRequest = { languageMenuExpanded = false }) {
+                                listOf(
+                                    "auto" to "Détection automatique",
+                                    "fr" to "Français",
+                                    "en" to "Anglais",
+                                    "es" to "Espagnol",
+                                    "de" to "Allemand",
+                                    "pt" to "Portugais",
+                                    "ar" to "Arabe",
+                                    "ha" to "Haoussa",
+                                    "sw" to "Swahili"
+                                ).forEach { (code, label) ->
+                                    DropdownMenuItem(text = { Text(label) }, onClick = {
+                                        languageMenuExpanded = false
+                                        viewModel.setLanguage(code)
+                                    })
+                                }
+                            }
+                        }
+                        Spacer(Modifier.weight(1f))
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Mode haute précision", fontWeight = FontWeight.Medium)
+                            Text("Plus lent que le mode rapide.", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(
+                            checked = highAccuracy,
+                            onCheckedChange = viewModel::setHighAccuracy,
+                            enabled = !isBusy && !recording
+                        )
+                    }
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    Button(
-                        onClick = { downloadMenuExpanded = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !isBusy && !recording
-                    ) {
-                        Icon(Icons.Default.Download, contentDescription = null)
-                        Spacer(Modifier.width(4.dp))
-                        Text("Télécharger le modèle")
-                    }
-                    DropdownMenu(
-                        expanded = downloadMenuExpanded,
-                        onDismissRequest = { downloadMenuExpanded = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Tiny Q8 — le plus rapide (~42 Mo)") },
-                            onClick = {
-                                downloadMenuExpanded = false
-                                viewModel.downloadModel(
-                                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q8_0.bin?download=true"
-                                )
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Base Q5 — recommandé (~57 Mo)") },
-                            onClick = {
-                                downloadMenuExpanded = false
-                                viewModel.downloadModel(
-                                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin?download=true"
-                                )
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Small Q5 — plus précis, plus lourd (~181 Mo)") },
-                            onClick = {
-                                downloadMenuExpanded = false
-                                viewModel.downloadModel(
-                                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin?download=true"
-                                )
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Importer depuis l'appareil (.bin)") },
-                            onClick = {
-                                downloadMenuExpanded = false
-                                pickModelLauncher.launch(arrayOf("*/*"))
-                            }
-                        )
-                    }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { startRecordingNow() },
+                    modifier = Modifier.weight(1f),
+                    enabled = modelLoaded && !isBusy && !recording
+                ) {
+                    Icon(Icons.Default.Mic, contentDescription = null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("Enregistrer")
                 }
-
                 Button(
                     onClick = {
-                        if (recording) {
-                            if (recordingFinalized.compareAndSet(false, true)) {
-                                recording = false
-                                stopAndTranscribe(
-                                    recorderInstance,
-                                    recordingThread,
-                                    chunks,
-                                    viewModel
-                                ) {
-                                    recorderInstance = null
-                                    recordingThread = null
-                                }
-                            }
-                        } else {
-                            if (ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.RECORD_AUDIO
-                                ) == PackageManager.PERMISSION_GRANTED
-                            ) {
-                                recordingFinalized.set(false)
-                                recording = true
-                                chunks.clear()
-                                startRec(
-                                    viewModel,
-                                    { rec -> recorderInstance = rec },
-                                    { thread -> recordingThread = thread },
-                                    chunks,
-                                    recordingFinalized
-                                ) { recording = it }
-                            } else {
-                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        if (recording && recordingFinalized.compareAndSet(false, true)) {
+                            pausedFlag.set(false)
+                            recordingPaused = false
+                            recording = false
+                            stopAndTranscribe(recorderInstance, recordingThread, chunks, viewModel) {
+                                recorderInstance = null
+                                recordingThread = null
                             }
                         }
                     },
                     modifier = Modifier.weight(1f),
-                    enabled = modelLoaded && !isBusy,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (recording) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        }
-                    )
+                    enabled = recording
                 ) {
-                    Icon(
-                        if (recording) Icons.Default.Stop else Icons.Default.Mic,
-                        contentDescription = null
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (recording) "Arrêter" else "Enregistrer")
+                    Icon(Icons.Default.Stop, contentDescription = null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("Arrêter")
                 }
             }
+
+            if (recording) {
+                OutlinedButton(
+                    onClick = {
+                        recordingPaused = !recordingPaused
+                        pausedFlag.set(recordingPaused)
+                        viewModel.setStatus(
+                            if (recordingPaused) "Enregistrement en pause : les nouveaux échantillons ne sont pas conservés."
+                            else "Enregistrement repris."
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(if (recordingPaused) Icons.Default.PlayArrow else Icons.Default.Pause, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (recordingPaused) "Reprendre" else "Mettre en pause")
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { audioImportLauncher.launch(arrayOf("audio/*")) },
+                    modifier = Modifier.weight(1f),
+                    enabled = modelLoaded && !isBusy && !recording
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Importer audio")
+                }
+                OutlinedButton(
+                    onClick = { viewModel.runDiagnostics(context) },
+                    modifier = Modifier.weight(1f),
+                    enabled = !isBusy && !recording
+                ) {
+                    Text("Vérifier le téléphone")
+                }
+            }
+            Text(
+                "Les fichiers audio longs sont décodés et transcrits par blocs de 30 secondes. Le texte apparaît au fur et à mesure du traitement de ces blocs.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
             if (isBusy) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
 
-            OutlinedCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(300.dp)
-            ) {
-                Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-                    if (currentText.isEmpty()) {
-                        Text(
-                            "Le texte transcrit apparaîtra ici...",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                            modifier = Modifier.align(Alignment.Center)
-                        )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Transcription", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = { showSubtitles = !showSubtitles }, enabled = currentText.isNotBlank()) {
+                    Icon(Icons.Default.Subtitles, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (showSubtitles) "Texte modifiable" else "Sous-titres")
+                }
+            }
+            if (showSubtitles) {
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    if (currentSegments.isEmpty()) {
+                        Text(currentText, modifier = Modifier.padding(12.dp))
                     } else {
-                        SelectionContainer(modifier = Modifier.fillMaxSize()) {
-                            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                                Text(currentText, style = MaterialTheme.typography.bodyLarge)
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            currentSegments.forEach { segment ->
+                                Column {
+                                    Text(formatTimestamp(segment.startMs), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                    Text(segment.text)
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                OutlinedTextField(
+                    value = currentText,
+                    onValueChange = viewModel::setCurrentText,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp),
+                    minLines = 7,
+                    label = { Text("Modifiez le texte si nécessaire") },
+                    placeholder = { Text("Le texte transcrit apparaîtra ici...") },
+                    enabled = !isBusy && !recording
+                )
+            }
+
+            if (currentText.isNotBlank()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = {
+                            saveTitle = ""
+                            saveFolder = "Général"
+                            saveNotes = personalNotes
+                            saveDialogShown = true
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !isBusy && !recording
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Sauvegarder")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val clip = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clip.setPrimaryClip(ClipData.newPlainText("Learn transcript", currentText))
+                            scope.launch { snackbarHostState.showSnackbar("Texte copié.") }
+                        },
+                        enabled = !isBusy && !recording
+                    ) { Text("Copier") }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, "Transcription Learn")
+                                putExtra(Intent.EXTRA_TEXT, currentText)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Partager la transcription"))
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !isBusy && !recording
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Partager")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val speech = currentText.take(TextToSpeech.getMaxSpeechInputLength())
+                            val result = speechEngine?.speak(speech, TextToSpeech.QUEUE_FLUSH, null, "learn-transcript")
+                            if (result == null || result == TextToSpeech.ERROR) {
+                                viewModel.setStatus("La lecture vocale n'est pas disponible.")
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !isBusy && !recording
+                    ) {
+                        Icon(Icons.Default.VolumeUp, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Lire à voix haute")
+                    }
+                }
+
+                var exportMenuExpanded by remember { mutableStateOf(false) }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = { exportMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Exporter : TXT, PDF, SRT ou VTT")
+                    }
+                    DropdownMenu(expanded = exportMenuExpanded, onDismissRequest = { exportMenuExpanded = false }) {
+                        DropdownMenuItem(text = { Text("Texte brut (.txt)") }, onClick = {
+                            exportMenuExpanded = false
+                            txtExportLauncher.launch("learn-transcription.txt")
+                        })
+                        DropdownMenuItem(text = { Text("Document PDF (.pdf)") }, onClick = {
+                            exportMenuExpanded = false
+                            pdfExportLauncher.launch("learn-transcription.pdf")
+                        })
+                        DropdownMenuItem(text = { Text("Sous-titres SubRip (.srt)") }, onClick = {
+                            exportMenuExpanded = false
+                            srtExportLauncher.launch("learn-transcription.srt")
+                        })
+                        DropdownMenuItem(text = { Text("Sous-titres WebVTT (.vtt)") }, onClick = {
+                            exportMenuExpanded = false
+                            vttExportLauncher.launch("learn-transcription.vtt")
+                        })
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = { viewModel.analyzeCurrent("summary") }, modifier = Modifier.weight(1f), enabled = !isBusy) {
+                        Text("Résumé")
+                    }
+                    OutlinedButton(onClick = { viewModel.analyzeCurrent("ideas") }, modifier = Modifier.weight(1f), enabled = !isBusy) {
+                        Text("Idées clés")
+                    }
+                    OutlinedButton(onClick = { viewModel.analyzeCurrent("tasks") }, modifier = Modifier.weight(1f), enabled = !isBusy) {
+                        Text("Actions")
+                    }
+                }
+                if (analysisText.isNotBlank()) {
+                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(analysisText, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Analyse locale indicative : les actions et idées sont repérées par règles textuelles, sans modèle IA.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            TextButton(onClick = { showNotes = !showNotes }) {
+                                Text(if (showNotes) "Masquer mes notes" else "Ajouter des commentaires personnels")
+                            }
+                            if (showNotes) {
+                                OutlinedTextField(
+                                    value = personalNotes,
+                                    onValueChange = viewModel::setPersonalNotes,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text("Mes notes") },
+                                    minLines = 3,
+                                    enabled = !isBusy
+                                )
                             }
                         }
                     }
                 }
             }
 
-            if (currentText.isNotEmpty()) {
-                Button(
-                    onClick = { saveDialogShown = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isBusy && !recording,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondary
-                    )
-                ) {
-                    Icon(Icons.Default.Save, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Sauvegarder dans l'historique")
-                }
+            if (modelNames.size > 1) {
+                Text(
+                    "Modèles conservés : ${modelNames.size}. Choisissez celui à charger dans le menu « Modèle ».",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                TextButton(
+                    onClick = { showModelDeleteConfirmation = true },
+                    enabled = !isBusy && !recording && selectedModel.isNotBlank() && selectedModel != "model.bin"
+                ) { Text("Supprimer le modèle sélectionné") }
             }
         }
+    }
+
+    if (showModelDeleteConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showModelDeleteConfirmation = false },
+            title = { Text("Supprimer ce modèle ?") },
+            text = { Text("Le fichier du modèle « $selectedModel » sera supprimé du stockage local. Cette action ne supprime pas les transcriptions.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteDownloadedModel(selectedModel)
+                    showModelDeleteConfirmation = false
+                }) { Text("Supprimer", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { showModelDeleteConfirmation = false }) { Text("Annuler") } }
+        )
     }
 
     if (saveDialogShown) {
         AlertDialog(
             onDismissRequest = { saveDialogShown = false },
-            title = { Text("Sauvegarder la transcription") },
+            title = { Text("Enregistrer dans l'historique") },
             text = {
-                OutlinedTextField(
-                    value = saveTitle,
-                    onValueChange = { saveTitle = it },
-                    label = { Text("Titre (optionnel)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = saveTitle,
+                        onValueChange = { saveTitle = it },
+                        label = { Text("Titre") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = saveFolder,
+                        onValueChange = { saveFolder = it },
+                        label = { Text("Dossier / cours / réunion") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = saveNotes,
+                        onValueChange = { saveNotes = it },
+                        label = { Text("Commentaire personnel (facultatif)") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.saveCurrentTranscription(saveTitle)
+                    viewModel.saveCurrentTranscription(saveTitle, saveFolder, saveNotes)
                     saveDialogShown = false
                     saveTitle = ""
-                    scope.launch { snackbarHostState.showSnackbar("Transcription sauvegardée.") }
-                }) {
-                    Text("Enregistrer")
-                }
+                    scope.launch { snackbarHostState.showSnackbar("Transcription sauvegardée localement.") }
+                }) { Text("Enregistrer") }
             },
             dismissButton = {
-                TextButton(onClick = { saveDialogShown = false }) {
-                    Text("Annuler")
-                }
+                TextButton(onClick = { saveDialogShown = false }) { Text("Annuler") }
             }
         )
     }
+}
+
+private fun writeExport(
+    uri: android.net.Uri,
+    format: String,
+    viewModel: MainViewModel,
+    context: android.content.Context,
+    text: String,
+    segments: List<TranscriptSegment>,
+    scope: kotlinx.coroutines.CoroutineScope,
+    snackbarHostState: SnackbarHostState
+) {
+    try {
+        val exportSegments = viewModel.currentExportSegments().ifEmpty {
+            if (text.isBlank()) emptyList() else listOf(TranscriptSegment(0, 1_000, text))
+        }
+        TranscriptExporter.write(
+            context = context,
+            uri = uri,
+            format = format,
+            title = "Transcription Learn",
+            text = text,
+            segments = exportSegments
+        )
+        scope.launch { snackbarHostState.showSnackbar("Export $format terminé.") }
+    } catch (error: Exception) {
+        viewModel.setStatus("Export impossible : ${error.message ?: "erreur d'écriture"}.")
+        scope.launch { snackbarHostState.showSnackbar("Échec de l'export.") }
+    }
+}
+
+private fun languageLabel(code: String): String = when (code) {
+    "auto" -> "Auto"
+    "fr" -> "Français"
+    "en" -> "Anglais"
+    "es" -> "Espagnol"
+    "de" -> "Allemand"
+    "pt" -> "Portugais"
+    "ar" -> "Arabe"
+    "ha" -> "Haoussa"
+    "sw" -> "Swahili"
+    else -> code
+}
+
+private fun formatTimestamp(milliseconds: Long): String {
+    val safe = milliseconds.coerceAtLeast(0L)
+    val hours = safe / 3_600_000L
+    val minutes = (safe / 60_000L) % 60L
+    val seconds = (safe / 1_000L) % 60L
+    return String.format(Locale.ROOT, "%02d:%02d:%02d", hours, minutes, seconds)
+}
+
+private fun micPermissionLauncherLaunch(
+    context: android.content.Context,
+    viewModel: MainViewModel,
+    finalized: AtomicBoolean,
+    paused: AtomicBoolean,
+    chunks: MutableList<ShortArray>,
+    setRecorder: (AudioRecord?) -> Unit,
+    setThread: (Thread?) -> Unit,
+    setState: (Boolean) -> Unit
+) {
+    // This branch is only used when the permission had not been granted. The launcher
+    // is owned by TranscribeScreen; request permission through the current Activity.
+    viewModel.setStatus("Accordez l'autorisation du microphone pour commencer à enregistrer.")
 }
 
 private fun startRec(
@@ -298,6 +659,7 @@ private fun startRec(
     setThread: (Thread?) -> Unit,
     chunks: MutableList<ShortArray>,
     recordingFinalized: AtomicBoolean,
+    paused: AtomicBoolean,
     setState: (Boolean) -> Unit
 ) {
     val minimumBuffer = AudioRecord.getMinBufferSize(
@@ -321,7 +683,7 @@ private fun startRec(
             minimumBuffer * 2
         )
     } catch (error: Exception) {
-        viewModel.setStatus("Impossible d'initialiser le microphone : " + (error.message ?: "erreur inconnue"))
+        viewModel.setStatus("Impossible d'initialiser le microphone : ${error.message ?: "erreur inconnue"}")
         recordingFinalized.set(true)
         setState(false)
         return
@@ -341,7 +703,7 @@ private fun startRec(
             throw IllegalStateException("L'enregistrement n'a pas démarré.")
         }
         setRecorder(recorder)
-        viewModel.setStatus("Enregistrement en cours. Limite : 2 minutes.")
+        viewModel.setStatus("Enregistrement en cours. Limite : 5 minutes par session.")
 
         val threadHolder = ThreadReference()
         val thread = Thread({
@@ -349,29 +711,26 @@ private fun startRec(
             var totalSamples = 0
             var maximumReached = false
 
-            while (true) {
+            while (!recordingFinalized.get()) {
                 val count = recorder.read(buffer, 0, buffer.size)
                 if (count > 0) {
+                    if (paused.get()) continue
                     val remaining = MAX_AUDIO_SAMPLES - totalSamples
                     if (remaining <= 0) {
                         maximumReached = true
                         break
                     }
                     val accepted = minOf(count, remaining)
-                    synchronized(chunks) {
-                        chunks.add(buffer.copyOf(accepted))
-                    }
+                    synchronized(chunks) { chunks.add(buffer.copyOf(accepted)) }
                     totalSamples += accepted
                     if (totalSamples >= MAX_AUDIO_SAMPLES) {
                         maximumReached = true
                         break
                     }
-                } else {
-                    if (count < 0 && !recordingFinalized.get()) {
+                } else if (count < 0) {
+                    if (!recordingFinalized.get()) {
                         Handler(Looper.getMainLooper()).post {
-                            if (!recordingFinalized.get()) {
-                                viewModel.setStatus("La lecture du microphone s'est interrompue (" + count + ").")
-                            }
+                            viewModel.setStatus("Lecture du microphone interrompue ($count).")
                         }
                     }
                     break
@@ -379,10 +738,7 @@ private fun startRec(
             }
 
             if (maximumReached) {
-                try {
-                    recorder.stop()
-                } catch (_: Exception) {
-                }
+                try { recorder.stop() } catch (_: Exception) { }
                 Handler(Looper.getMainLooper()).post {
                     if (recordingFinalized.compareAndSet(false, true)) {
                         setState(false)
@@ -399,27 +755,19 @@ private fun startRec(
         thread.start()
         setThread(thread)
     } catch (error: Exception) {
-        try {
-            recorder.stop()
-        } catch (_: Exception) {
-        }
+        try { recorder.stop() } catch (_: Exception) { }
         recorder.release()
         setRecorder(null)
         setThread(null)
         recordingFinalized.set(true)
-        viewModel.setStatus("Erreur microphone : " + (error.message ?: "erreur inconnue"))
+        viewModel.setStatus("Erreur microphone : ${error.message ?: "erreur inconnue"}")
         setState(false)
     }
 }
 
 private class ThreadReference {
-    @Volatile
-    private var current: Thread? = null
-
-    fun set(thread: Thread?) {
-        current = thread
-    }
-
+    @Volatile private var current: Thread? = null
+    fun set(thread: Thread?) { current = thread }
     fun get(): Thread? = current
 }
 
@@ -430,21 +778,9 @@ private fun stopAndTranscribe(
     viewModel: MainViewModel,
     cleanup: () -> Unit
 ) {
-    try {
-        recorder?.stop()
-    } catch (_: Exception) {
-    }
-
-    try {
-        thread?.join(1_000)
-    } catch (_: InterruptedException) {
-        Thread.currentThread().interrupt()
-    }
-
-    try {
-        recorder?.release()
-    } catch (_: Exception) {
-    }
+    try { recorder?.stop() } catch (_: Exception) { }
+    try { thread?.join(1_000) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+    try { recorder?.release() } catch (_: Exception) { }
     cleanup()
 
     val audio: FloatArray
@@ -453,16 +789,13 @@ private fun stopAndTranscribe(
         audio = FloatArray(total)
         var index = 0
         for (chunk in chunks) {
-            for (sample in chunk) {
-                audio[index++] = sample / 32768f
-            }
+            for (sample in chunk) audio[index++] = sample / 32768f
         }
         chunks.clear()
     }
-
     if (audio.isEmpty()) {
         viewModel.setStatus("Aucun audio n'a été capturé.")
         return
     }
-    viewModel.transcribeAudio(audio) {}
+    viewModel.transcribeAudio(audio)
 }
