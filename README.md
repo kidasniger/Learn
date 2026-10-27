@@ -12,7 +12,8 @@ Learn est une application Android de transcription locale fondée sur [whisper.c
 - Choisir la détection automatique ou une langue précise (français, anglais, espagnol, allemand, portugais, arabe, haoussa et swahili). Les résultats varient selon le modèle et la qualité audio ; chaque combinaison de langue et d'appareil doit encore être évaluée.
 - Choisir le mode rapide ou le mode haute précision.
 - Rechercher dans les transcriptions sauvegardées, classer les éléments par dossier/cours/réunion, ajouter des favoris et des commentaires personnels ; confirmer les suppressions.
-- Obtenir un résumé de sélection de phrases, des idées clés candidates et des tâches candidates au moyen de règles locales simples.
+- Obtenir un résumé de sélection de phrases, des idées clés candidates, des tâches candidates et des fiches de révision au moyen de règles locales simples.
+- Lancer un test du moteur avec l'audio anglais de démonstration de whisper.cpp (téléchargement Internet requis).
 - Utiliser le mode sombre, la vérification de stockage et un diagnostic du microphone, des autorisations et du chargement de Whisper.
 
 Les transcriptions sauvegardées sont conservées dans une base Room locale, y compris après fermeture de l'application. Les anciens enregistrements sauvegardés restent accessibles après la migration de la base de données.
@@ -47,5 +48,5 @@ Ne pas committer le keystore ni son mot de passe dans le dépôt. L'activation d
 - Le texte de la transcription est progressif pendant le traitement des blocs ; la transcription ne s'exécute pas en continu pendant que le microphone est encore en train d'enregistrer.
 - Le détecteur de silence supprime les blocs silencieux et réduit les silences aux bords des blocs ; il ne supprime pas encore tous les silences internes d'un long passage.
 - Les résumés, idées et tâches sont des extractions heuristiques locales, pas une génération par un modèle d'IA.
-- La traduction libre vers n'importe quelle langue, un jeu audio de démonstration parlée et la restauration d'un enregistrement non sauvegardé après fermeture forcée ne sont pas encore fournis.
+- La traduction libre vers n'importe quelle langue et la restauration d'un enregistrement micro non sauvegardé après fermeture forcée ne sont pas encore fournies. Le test de démonstration télécharge un court extrait anglais de whisper.cpp et nécessite Internet.
 - Le workflow de production est prêt pour une signature protégée, mais aucune release de production ne doit être publiée tant que les secrets de signature ne sont pas configurés et que la build de release n'a pas été vérifiée sur l'appareil cible.
