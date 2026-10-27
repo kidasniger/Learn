@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private const val SAMPLE_RATE = 16_000
 private const val MAX_RECORDING_SECONDS = 5 * 60
+private const val LIVE_CHUNK_SECONDS = 30
 private const val MAX_AUDIO_SAMPLES = SAMPLE_RATE * MAX_RECORDING_SECONDS
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -122,6 +123,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
             startRec(
                 context,
                 viewModel,
+                viewModel.currentTimelineEndMs(),
                 { recorderInstance = it },
                 { recordingThread = it },
                 chunks,
@@ -146,6 +148,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
             startRec(
                 context,
                 viewModel,
+                viewModel.currentTimelineEndMs(),
                 { recorderInstance = it },
                 { recordingThread = it },
                 chunks,
@@ -760,6 +763,7 @@ private fun formatTimestamp(milliseconds: Long): String {
 private fun startRec(
     context: android.content.Context,
     viewModel: MainViewModel,
+    baseOffsetMs: Long,
     setRecorder: (AudioRecord?) -> Unit,
     setThread: (Thread?) -> Unit,
     chunks: MutableList<ShortArray>,
@@ -817,12 +821,14 @@ private fun startRec(
             throw IllegalStateException("L'enregistrement n'a pas démarré.")
         }
         setRecorder(recorder)
-        viewModel.setStatus("Enregistrement en cours. Limite : 5 minutes par session.")
+        viewModel.setStatus("Enregistrement en cours. La transcription se met à jour pendant la capture (segments de 30 secondes). Limite : 5 minutes.")
 
         val threadHolder = ThreadReference()
         val thread = Thread({
             val buffer = ShortArray(4096)
             var totalSamples = 0
+            var processedSamples = 0
+            var nextFlushSamples = SAMPLE_RATE * LIVE_CHUNK_SECONDS
             var maximumReached = false
 
             while (!recordingFinalized.get()) {
@@ -837,6 +843,21 @@ private fun startRec(
                     val accepted = minOf(count, remaining)
                     synchronized(chunks) { chunks.add(buffer.copyOf(accepted)) }
                     totalSamples += accepted
+
+                    // Drain a bounded window as soon as it reaches about 30 seconds. The
+                    // inference runs asynchronously on the single Whisper executor while
+                    // AudioRecord continues to capture the next window.
+                    if (totalSamples >= nextFlushSamples || totalSamples >= MAX_AUDIO_SAMPLES) {
+                        val window = drainRecordedAudio(chunks)
+                        val startOffset = baseOffsetMs +
+                            processedSamples.toLong() * 1000L / SAMPLE_RATE
+                        processedSamples = totalSamples
+                        nextFlushSamples = processedSamples + SAMPLE_RATE * LIVE_CHUNK_SECONDS
+                        if (window.isNotEmpty()) {
+                            viewModel.transcribeLiveChunk(window, startOffset)
+                        }
+                    }
+
                     if (totalSamples >= MAX_AUDIO_SAMPLES) {
                         maximumReached = true
                         break
@@ -849,6 +870,15 @@ private fun startRec(
                     }
                     break
                 }
+            }
+
+            // Flush the final partial window when the user presses Stop or the maximum
+            // duration is reached. Full windows have already been submitted above.
+            val finalWindow = drainRecordedAudio(chunks)
+            if (finalWindow.isNotEmpty()) {
+                val startOffset = baseOffsetMs +
+                    processedSamples.toLong() * 1000L / SAMPLE_RATE
+                viewModel.transcribeLiveChunk(finalWindow, startOffset)
             }
 
             if (maximumReached) {
@@ -879,6 +909,20 @@ private fun startRec(
     }
 }
 
+private fun drainRecordedAudio(chunks: MutableList<ShortArray>): FloatArray {
+    synchronized(chunks) {
+        val total = chunks.sumOf { it.size }
+        if (total == 0) return FloatArray(0)
+        val audio = FloatArray(total)
+        var index = 0
+        for (chunk in chunks) {
+            for (sample in chunk) audio[index++] = sample / 32768f
+        }
+        chunks.clear()
+        return audio
+    }
+}
+
 private class ThreadReference {
     @Volatile private var current: Thread? = null
     fun set(thread: Thread?) { current = thread }
@@ -893,23 +937,9 @@ private fun stopAndTranscribe(
     cleanup: () -> Unit
 ) {
     try { recorder?.stop() } catch (_: Exception) { }
-    try { thread?.join(1_000) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+    try { thread?.join(2_000) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
     try { recorder?.release() } catch (_: Exception) { }
     cleanup()
-
-    val audio: FloatArray
-    synchronized(chunks) {
-        val total = chunks.sumOf { it.size }
-        audio = FloatArray(total)
-        var index = 0
-        for (chunk in chunks) {
-            for (sample in chunk) audio[index++] = sample / 32768f
-        }
-        chunks.clear()
-    }
-    if (audio.isEmpty()) {
-        viewModel.setStatus("Aucun audio n'a été capturé.")
-        return
-    }
-    viewModel.transcribeAudio(audio)
+    synchronized(chunks) { chunks.clear() }
+    viewModel.setStatus("Enregistrement arrêté. Les segments capturés sont en cours de transcription.")
 }
