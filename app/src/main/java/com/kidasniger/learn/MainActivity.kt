@@ -14,6 +14,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.kidasniger.learn.data.TranscriptionEntity
 import com.kidasniger.learn.ui.AboutScreen
 import com.kidasniger.learn.ui.HistoryScreen
 import com.kidasniger.learn.ui.MainViewModel
@@ -25,7 +26,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            WhisperLearnTheme {
+            val preferences = remember {
+                getSharedPreferences("learn_preferences", MODE_PRIVATE)
+            }
+            var darkTheme by remember {
+                mutableStateOf(preferences.getBoolean("dark_theme", false))
+            }
+
+            WhisperLearnTheme(darkTheme = darkTheme, dynamicColor = false) {
                 val viewModel: MainViewModel = viewModel()
                 var selectedTab by remember { mutableIntStateOf(0) }
 
@@ -48,22 +56,29 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = selectedTab == 2,
                                 onClick = { selectedTab = 2 },
-                                icon = { Icon(Icons.Default.Info, contentDescription = "À propos") },
-                                label = { Text("À propos") }
+                                icon = { Icon(Icons.Default.Info, contentDescription = "Paramètres") },
+                                label = { Text("Paramètres") }
                             )
                         }
                     }
                 ) { innerPadding ->
                     Surface(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding),
+                        modifier = Modifier.fillMaxSize().padding(innerPadding),
                         color = MaterialTheme.colorScheme.background
                     ) {
                         when (selectedTab) {
                             0 -> TranscribeScreen(viewModel)
-                            1 -> HistoryScreen(viewModel)
-                            2 -> AboutScreen()
+                            1 -> HistoryScreen(viewModel) { item: TranscriptionEntity ->
+                                viewModel.loadTranscription(item)
+                                selectedTab = 0
+                            }
+                            2 -> AboutScreen(
+                                darkTheme = darkTheme,
+                                onDarkThemeChanged = { enabled ->
+                                    darkTheme = enabled
+                                    preferences.edit().putBoolean("dark_theme", enabled).apply()
+                                }
+                            )
                         }
                     }
                 }
