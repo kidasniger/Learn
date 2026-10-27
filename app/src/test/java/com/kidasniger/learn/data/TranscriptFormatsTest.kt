@@ -37,6 +37,15 @@ class TranscriptFormatsTest {
     }
 
     @Test
+    fun flashcardsAreBuiltFromSentencesWithAnswers() {
+        val cards = TranscriptFormats.generateFlashcards(
+            "La photosynthèse transforme la lumière en énergie chimique. Les plantes absorbent le dioxyde de carbone."
+        )
+        assertEquals(2, cards.size)
+        assertTrue(cards.all { it.question.isNotBlank() && it.answer.isNotBlank() })
+    }
+
+    @Test
     fun taskExtractorFindsActionItems() {
         val tasks = TranscriptFormats.extractTasks(
             "La réunion commence. Nous devons envoyer le rapport demain. Le budget a été validé."
