@@ -127,10 +127,8 @@ internal object AudioFileDecoder {
                                     while (pcm.remaining() >= bytesPerFrame) {
                                         var mixed = 0f
                                         repeat(channels) { mixed += pcm.short / 32768f }
-                                        pushSample(mixed / channels, sourceChunk, sourceCount).also {
-                                            sourceCount = it.first
-                                            if (it.second) emitChunk()
-                                        }
+                                        sourceChunk[sourceCount++] = (mixed / channels).coerceIn(-1f, 1f)
+                                        if (sourceCount == sourceChunk.size) emitChunk()
                                     }
                                 }
                                 AudioFormat.ENCODING_PCM_FLOAT -> {
@@ -138,10 +136,8 @@ internal object AudioFileDecoder {
                                     while (pcm.remaining() >= bytesPerFrame) {
                                         var mixed = 0f
                                         repeat(channels) { mixed += pcm.float.coerceIn(-1f, 1f) }
-                                        pushSample(mixed / channels, sourceChunk, sourceCount).also {
-                                            sourceCount = it.first
-                                            if (it.second) emitChunk()
-                                        }
+                                        sourceChunk[sourceCount++] = (mixed / channels).coerceIn(-1f, 1f)
+                                        if (sourceCount == sourceChunk.size) emitChunk()
                                     }
                                 }
                                 else -> throw IOException("Encodage PCM non pris en charge : $pcmEncoding.")
@@ -166,17 +162,6 @@ internal object AudioFileDecoder {
             try { extractor.release() } catch (_: Exception) { }
             try { descriptor?.close() } catch (_: Exception) { }
         }
-    }
-
-    private fun pushSample(
-        sample: Float,
-        destination: FloatArray,
-        currentCount: Int
-    ): Pair<Int, Boolean> {
-        if (currentCount >= destination.size) return currentCount to true
-        destination[currentCount] = sample.coerceIn(-1f, 1f)
-        val next = currentCount + 1
-        return next to (next == destination.size)
     }
 
     private fun resample(input: FloatArray, fromRate: Int, toRate: Int): FloatArray {
