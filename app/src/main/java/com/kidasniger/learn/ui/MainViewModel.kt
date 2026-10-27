@@ -19,6 +19,13 @@ import com.kidasniger.learn.data.TranscriptFormats
 import com.kidasniger.learn.data.TranscriptSegment
 import com.kidasniger.learn.data.TranscriptionEntity
 import com.kidasniger.learn.data.TranscriptionRepository
+import com.google.android.gms.tasks.Task
+import com.google.mlkit.nl.languageid.LanguageIdentification
+import com.google.mlkit.nl.translate.DownloadConditions
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.Translator
+import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -40,6 +47,19 @@ import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+private suspend fun <T> Task<T>.awaitResult(): T =
+    suspendCancellableCoroutine { continuation ->
+        addOnSuccessListener { result ->
+            if (continuation.isActive) continuation.resume(result)
+        }
+        addOnFailureListener { error ->
+            if (continuation.isActive) continuation.resumeWithException(error)
+        }
+        addOnCanceledListener {
+            if (continuation.isActive) continuation.cancel()
+        }
+    }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: TranscriptionRepository
@@ -88,6 +108,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _analysisText = MutableStateFlow("")
     val analysisText: StateFlow<String> = _analysisText
+
+    private val _translatedText = MutableStateFlow("")
+    val translatedText: StateFlow<String> = _translatedText
 
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy
@@ -507,6 +530,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _currentText.value = text
         textWasEdited = true
         _analysisText.value = ""
+        _translatedText.value = ""
     }
 
     fun setPersonalNotes(notes: String) {
@@ -517,6 +541,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _currentText.value = ""
         _currentSegments.value = emptyList()
         _analysisText.value = ""
+        _translatedText.value = ""
         textWasEdited = false
     }
 
@@ -720,6 +745,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
+    fun translateCurrentText(targetTag: String) {
+        val sourceText = _currentText.value.trim()
+        if (sourceText.isBlank()) {
+            _statusText.value = "Transcrivez ou ouvrez un texte avant de le traduire."
+            return
+        }
+        if (targetTag !in TRANSLATION_LANGUAGES) {
+            _statusText.value = "Cette langue cible n'est pas disponible dans la traduction hors ligne."
+            return
+        }
+        if (!beginOperation("Préparation de la traduction...")) return
+
+        viewModelScope.launch {
+            var translator: Translator? = null
+            try {
+                val sourceTag = if (_language.value == "auto") {
+                    val identifier = LanguageIdentification.getClient()
+                    try {
+                        identifier.identifyLanguage(sourceText).awaitResult()
+                    } finally {
+                        identifier.close()
+                    }
+                } else {
+                    _language.value
+                }
+
+                if (sourceTag == "und" || sourceTag.isBlank()) {
+                    throw IOException("La langue source n'a pas pu être détectée. Choisissez-la manuellement puis réessayez.")
+                }
+                val sourceLanguage = TranslateLanguage.fromLanguageTag(sourceTag)
+                    ?: throw IOException("La langue source '$sourceTag' ne possède pas de modèle de traduction compatible.")
+                val targetLanguage = TranslateLanguage.fromLanguageTag(targetTag)
+                    ?: throw IOException("La langue cible n'est pas prise en charge.")
+
+                if (sourceLanguage == targetLanguage) {
+                    _translatedText.value = "Le texte est déjà dans la langue cible choisie."
+                    _statusText.value = "Aucune traduction nécessaire."
+                    return@launch
+                }
+
+                val options = TranslatorOptions.Builder()
+                    .setSourceLanguage(sourceLanguage)
+                    .setTargetLanguage(targetLanguage)
+                    .build()
+                translator = Translation.getClient(options)
+                _statusText.value = "Vérification / téléchargement du modèle de traduction..."
+                translator.downloadModelIfNeeded(DownloadConditions.Builder().build()).awaitResult()
+                _statusText.value = "Traduction hors ligne en cours..."
+                _translatedText.value = translator.translate(sourceText).awaitResult()
+                _statusText.value = "Traduction terminée. Le modèle de langue reste sur l'appareil."
+            } catch (error: Exception) {
+                _translatedText.value = ""
+                _statusText.value = "Traduction impossible : ${safeMessage(error)}"
+            } finally {
+                translator?.close()
+                _isBusy.value = false
+            }
+        }
+    }
+
     fun analyzeCurrent(kind: String) {
         val text = _currentText.value.trim()
         if (text.isBlank()) {
@@ -797,6 +882,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         _personalNotes.value = item.notes
         _analysisText.value = ""
+        _translatedText.value = ""
         textWasEdited = false
         setLanguage(item.language.takeIf { it in SUPPORTED_LANGUAGES } ?: "auto")
         _statusText.value = "Transcription ouverte : ${item.title}"
@@ -878,5 +964,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_DEMO_AUDIO_BYTES = 5L * 1024L * 1024L
         private const val DEMO_AUDIO_URL = "https://github.com/ggml-org/whisper.cpp/raw/refs/heads/master/samples/jfk.wav"
         val SUPPORTED_LANGUAGES = linkedSetOf("auto", "fr", "en", "es", "de", "pt", "ar", "ha", "sw")
+        val TRANSLATION_LANGUAGES = linkedSetOf(
+            "ar", "de", "en", "es", "fr", "hi", "id", "it", "ja", "ko",
+            "nl", "pl", "pt", "ru", "th", "tr", "uk", "vi", "zh"
+        )
     }
 }
