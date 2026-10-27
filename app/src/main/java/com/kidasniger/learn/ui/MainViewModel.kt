@@ -557,6 +557,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearCurrentTranscription() {
         _currentText.value = ""
         _currentSegments.value = emptyList()
+        _personalNotes.value = ""
         _analysisText.value = ""
         _translatedText.value = ""
         textWasEdited = false
@@ -789,6 +790,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _currentSegments.value = _currentSegments.value + parsed
         if (!textWasEdited) _currentText.value = TranscriptFormats.plainText(_currentSegments.value)
         _analysisText.value = ""
+        scheduleDraftSave()
         return true
     }
 
