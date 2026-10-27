@@ -585,14 +585,73 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun transcribeAudioFile(uri: Uri, context: Context) {
+    fun runDemoTranscription(context: Context) {
+        if (!_modelLoaded.value) {
+            _statusText.value = "Chargez un modèle avant de lancer le test Whisper."
+            return
+        }
+        if (!beginOperation("Téléchargement de l'audio de démonstration...")) return
+
+        viewModelScope.launch {
+            try {
+                val demoFile = withContext(Dispatchers.IO) {
+                    val destination = File(context.cacheDir, "learn-whisper-demo-jfk.wav")
+                    val connection = (URL(DEMO_AUDIO_URL).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 15_000
+                        readTimeout = 30_000
+                        instanceFollowRedirects = true
+                    }
+                    try {
+                        connection.connect()
+                        if (connection.responseCode !in 200..299 || connection.url.protocol != "https") {
+                            throw IOException("Téléchargement de la démonstration refusé.")
+                        }
+                        if (connection.contentLengthLong > MAX_DEMO_AUDIO_BYTES) {
+                            throw IOException("Le fichier de démonstration est trop volumineux.")
+                        }
+                        connection.inputStream.use { input ->
+                            destination.outputStream().buffered().use { output ->
+                                val buffer = ByteArray(16 * 1024)
+                                var total = 0L
+                                while (true) {
+                                    val count = input.read(buffer)
+                                    if (count < 0) break
+                                    if (count == 0) continue
+                                    total += count.toLong()
+                                    if (total > MAX_DEMO_AUDIO_BYTES) {
+                                        throw IOException("Le fichier de démonstration est trop volumineux.")
+                                    }
+                                    output.write(buffer, 0, count)
+                                }
+                            }
+                        }
+                        if (destination.length() < 44L) throw IOException("Le fichier audio de démonstration est incomplet.")
+                        destination
+                    } catch (error: Exception) {
+                        destination.delete()
+                        throw error
+                    } finally {
+                        connection.disconnect()
+                    }
+                }
+                _isBusy.value = false
+                _statusText.value = "Test moteur : audio anglais de démonstration."
+                transcribeAudioFile(Uri.fromFile(demoFile), context, languageOverride = "en")
+            } catch (error: Exception) {
+                _statusText.value = "Test Whisper impossible : ${safeMessage(error)}"
+                _isBusy.value = false
+            }
+        }
+    }
+
+    fun transcribeAudioFile(uri: Uri, context: Context, languageOverride: String? = null) {
         if (!_modelLoaded.value) {
             _statusText.value = "Téléchargez ou sélectionnez un modèle avant d'importer un audio."
             return
         }
         if (!beginOperation("Ouverture du fichier audio...")) return
         clearCurrentTranscription()
-        val languageCode = _language.value
+        val languageCode = languageOverride ?: _language.value
         val accurate = _highAccuracy.value
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
         val startedAt = SystemClock.elapsedRealtime()
@@ -672,12 +731,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "ideas" -> TranscriptFormats.extractKeyIdeas(text).joinToString("\n") { "• $it" }
             "tasks" -> TranscriptFormats.extractTasks(text).joinToString("\n") { "□ $it" }
                 .ifBlank { "Aucune formulation de tâche détectée. Cette extraction locale est indicative." }
+            "flashcards" -> TranscriptFormats.generateFlashcards(text).mapIndexed { index, card ->
+                "${index + 1}. Question : ${card.question}\n   Réponse : ${card.answer}"
+            }.joinToString("\n\n").ifBlank { "Ajoutez davantage de contenu pour générer des fiches de révision." }
             else -> ""
         }
         _analysisText.value = when (kind) {
             "summary" -> "Résumé automatique local (sélection de phrases, pas une génération IA)\n\n$result"
             "ideas" -> "Idées principales candidates\n\n$result"
             "tasks" -> "Tâches et décisions candidates\n\n$result"
+            "flashcards" -> "Fiches de révision (génération heuristique locale)\n\n$result"
             else -> result
         }
     }
@@ -812,6 +875,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val MIN_MODEL_BYTES = 1_000_000L
         private const val MAX_MODEL_BYTES = 250L * 1024L * 1024L
         private const val MIN_FREE_SPACE_BYTES = 32L * 1024L * 1024L
+        private const val MAX_DEMO_AUDIO_BYTES = 5L * 1024L * 1024L
+        private const val DEMO_AUDIO_URL = "https://github.com/ggml-org/whisper.cpp/raw/refs/heads/master/samples/jfk.wav"
         val SUPPORTED_LANGUAGES = linkedSetOf("auto", "fr", "en", "es", "de", "pt", "ar", "ha", "sw")
     }
 }
