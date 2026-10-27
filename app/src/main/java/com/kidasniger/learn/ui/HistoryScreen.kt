@@ -27,16 +27,19 @@ fun HistoryScreen(viewModel: MainViewModel) {
     val transcriptions by viewModel.transcriptions.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    var showClearConfirmation by remember { mutableStateOf(false) }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Historique des transcriptions") },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                ),
                 actions = {
                     if (transcriptions.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.clearHistory() }) {
+                        IconButton(onClick = { showClearConfirmation = true }) {
                             Icon(Icons.Default.Delete, contentDescription = "Tout effacer")
                         }
                     }
@@ -77,7 +80,11 @@ fun HistoryScreen(viewModel: MainViewModel) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(transcriptions, key = { it.id }) { item ->
-                    val dateFormat = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date(item.timestamp))
+                    val dateFormat = SimpleDateFormat(
+                        "dd/MM/yyyy HH:mm",
+                        Locale.getDefault()
+                    ).format(Date(item.timestamp))
+
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -115,20 +122,36 @@ fun HistoryScreen(viewModel: MainViewModel) {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 TextButton(onClick = {
-                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    cm.setPrimaryClip(ClipData.newPlainText("transcription", item.text))
-                                    scope.launch { snackbarHostState.showSnackbar("Texte copié dans le presse-papiers") }
+                                    val clipboard = context.getSystemService(
+                                        Context.CLIPBOARD_SERVICE
+                                    ) as ClipboardManager
+                                    clipboard.setPrimaryClip(
+                                        ClipData.newPlainText("transcription", item.text)
+                                    )
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar("Texte copié dans le presse-papiers.")
+                                    }
                                 }) {
-                                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Icon(
+                                        Icons.Default.ContentCopy,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
                                     Spacer(Modifier.width(4.dp))
                                     Text("Copier")
                                 }
                                 Spacer(Modifier.width(8.dp))
                                 TextButton(
                                     onClick = { viewModel.deleteTranscription(item.id) },
-                                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                                    colors = ButtonDefaults.textButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    )
                                 ) {
-                                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
                                     Spacer(Modifier.width(4.dp))
                                     Text("Supprimer")
                                 }
@@ -138,5 +161,31 @@ fun HistoryScreen(viewModel: MainViewModel) {
                 }
             }
         }
+    }
+
+    if (showClearConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirmation = false },
+            title = { Text("Effacer l'historique ?") },
+            text = {
+                Text("Toutes les transcriptions enregistrées seront supprimées définitivement.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.clearHistory()
+                    showClearConfirmation = false
+                    scope.launch {
+                        snackbarHostState.showSnackbar("Historique effacé.")
+                    }
+                }) {
+                    Text("Tout effacer", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirmation = false }) {
+                    Text("Annuler")
+                }
+            }
+        )
     }
 }

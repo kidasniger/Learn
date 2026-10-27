@@ -1,21 +1,69 @@
 name: Build APK
+
 on:
   push:
+    branches:
+      - main
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: "17"
+
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
-      - run: gradle assembleDebug --no-daemon
+          gradle-version: "8.11.1"
+
+      - name: Build and test APK
+        run: gradle assembleDebug testDebugUnitTest --no-daemon
+
+      - name: Verify APK
+        run: test -s app/build/outputs/apk/debug/app-debug.apk
+
       - uses: actions/upload-artifact@v4
         with:
           name: learn-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release:') }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: learn-debug-apk
+          path: dist
+
+      - name: Verify release APK
+        run: test -s dist/app-debug.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.1.0
+          name: Learn v1.1.0
+          body: |
+            Learn v1.1.0
+
+            - Correctifs de stabilité pour le moteur Whisper et le microphone.
+            - Téléchargement et import du modèle plus sûrs, avec validation et conservation de l'ancien modèle en cas d'échec.
+            - Limite d'enregistrement de 10 minutes pour réduire les risques de saturation mémoire.
+            - Historique avec confirmation avant suppression globale.
+            - Compilation avec Android API 36 et NDK compatible avec les pages mémoire de 16 Ko.
+          files: dist/app-debug.apk
+          fail_on_unmatched_files: true

@@ -6,45 +6,87 @@ extern "C" {
 
 JNIEXPORT jlong JNICALL
 Java_com_kidasniger_learn_WhisperLib_initContext(JNIEnv *env, jobject, jstring path) {
+    if (path == nullptr) {
+        return 0;
+    }
+
     const char *p = env->GetStringUTFChars(path, nullptr);
-    whisper_context_params cp = whisper_context_default_params();
-    cp.use_gpu = false;
-    whisper_context *ctx = whisper_init_from_file_with_params(p, cp);
+    if (p == nullptr) {
+        return 0;
+    }
+
+    whisper_context_params params = whisper_context_default_params();
+    params.use_gpu = false;
+    whisper_context *context = whisper_init_from_file_with_params(p, params);
     env->ReleaseStringUTFChars(path, p);
-    return (jlong) ctx;
+    return reinterpret_cast<jlong>(context);
 }
 
 JNIEXPORT void JNICALL
-Java_com_kidasniger_learn_WhisperLib_freeContext(JNIEnv *, jobject, jlong ptr) {
-    if (ptr) whisper_free((whisper_context *) ptr);
+Java_com_kidasniger_learn_WhisperLib_freeContext(JNIEnv *, jobject, jlong pointer) {
+    if (pointer != 0) {
+        whisper_free(reinterpret_cast<whisper_context *>(pointer));
+    }
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_kidasniger_learn_WhisperLib_transcribe(JNIEnv *env, jobject, jlong ptr,
-                                                jfloatArray audio, jstring lang, jint threads) {
-    auto *ctx = (whisper_context *) ptr;
-    jfloat *data = env->GetFloatArrayElements(audio, nullptr);
-    jsize n = env->GetArrayLength(audio);
-    const char *l = env->GetStringUTFChars(lang, nullptr);
-
-    whisper_full_params p = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    p.print_realtime = false;
-    p.print_progress = false;
-    p.print_timestamps = false;
-    p.print_special = false;
-    p.translate = false;
-    p.language = l;
-    p.n_threads = threads;
-    p.no_context = true;
-
-    std::string out;
-    if (whisper_full(ctx, p, data, n) == 0) {
-        int ns = whisper_full_n_segments(ctx);
-        for (int i = 0; i < ns; i++) out += whisper_full_get_segment_text(ctx, i);
+Java_com_kidasniger_learn_WhisperLib_transcribe(
+    JNIEnv *env,
+    jobject,
+    jlong pointer,
+    jfloatArray audio,
+    jstring language,
+    jint threads
+) {
+    auto *context = reinterpret_cast<whisper_context *>(pointer);
+    if (context == nullptr || audio == nullptr || language == nullptr) {
+        return env->NewStringUTF("");
     }
-    env->ReleaseStringUTFChars(lang, l);
-    env->ReleaseFloatArrayElements(audio, data, JNI_ABORT);
-    return env->NewStringUTF(out.c_str());
+
+    const jsize sampleCount = env->GetArrayLength(audio);
+    if (sampleCount <= 0) {
+        return env->NewStringUTF("");
+    }
+
+    jfloat *samples = env->GetFloatArrayElements(audio, nullptr);
+    if (samples == nullptr) {
+        return env->NewStringUTF("");
+    }
+
+    const char *languageCode = env->GetStringUTFChars(language, nullptr);
+    if (languageCode == nullptr) {
+        env->ReleaseFloatArrayElements(audio, samples, JNI_ABORT);
+        return env->NewStringUTF("");
+    }
+
+    std::string output;
+    try {
+        whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+        params.print_realtime = false;
+        params.print_progress = false;
+        params.print_timestamps = false;
+        params.print_special = false;
+        params.translate = false;
+        params.language = languageCode;
+        params.n_threads = threads > 0 ? threads : 1;
+        params.no_context = true;
+
+        if (whisper_full(context, params, samples, sampleCount) == 0) {
+            const int segments = whisper_full_n_segments(context);
+            for (int index = 0; index < segments; ++index) {
+                const char *segment = whisper_full_get_segment_text(context, index);
+                if (segment != nullptr) {
+                    output += segment;
+                }
+            }
+        }
+    } catch (...) {
+        output.clear();
+    }
+
+    env->ReleaseStringUTFChars(language, languageCode);
+    env->ReleaseFloatArrayElements(audio, samples, JNI_ABORT);
+    return env->NewStringUTF(output.c_str());
 }
 
 }
