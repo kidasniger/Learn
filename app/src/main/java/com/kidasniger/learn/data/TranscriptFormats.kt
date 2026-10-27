@@ -15,6 +15,11 @@ data class TrimmedAudio(
     val leadingSamples: Int
 )
 
+data class ReviewCard(
+    val question: String,
+    val answer: String
+)
+
 /**
  * Pure local helpers used by the transcript editor and export actions.
  * The summaries and task extraction are deliberately heuristic, not generative AI.
@@ -103,6 +108,34 @@ object TranscriptFormats {
             .sortedByDescending { scoreIdea(it) }
             .take(maxItems)
             .ifEmpty { sentences.take(maxItems) }
+    }
+
+    fun generateFlashcards(text: String, maxItems: Int = 8): List<ReviewCard> {
+        return splitSentences(text)
+            .filter { it.length >= 35 }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .take(maxItems)
+            .map { sentence ->
+                val midpoint = sentence.length / 2
+                val leftSpace = sentence.lastIndexOf(' ', midpoint)
+                val rightSpace = sentence.indexOf(' ', midpoint.coerceAtLeast(1))
+                val splitAt = when {
+                    rightSpace in (midpoint + 1)..(midpoint + 24) -> rightSpace
+                    leftSpace in 12 until midpoint -> leftSpace
+                    else -> -1
+                }
+                if (splitAt > 0 && splitAt < sentence.lastIndex - 8) {
+                    ReviewCard(
+                        question = "Complétez : ${sentence.substring(0, splitAt).trim()} …",
+                        answer = sentence.substring(splitAt + 1).trim()
+                    )
+                } else {
+                    ReviewCard(
+                        question = "Quel point retenir ?",
+                        answer = sentence
+                    )
+                }
+            }
     }
 
     fun extractTasks(text: String, maxItems: Int = 12): List<String> {
