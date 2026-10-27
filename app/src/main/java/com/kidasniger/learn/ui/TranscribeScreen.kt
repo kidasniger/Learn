@@ -348,6 +348,14 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                     Text("Vérifier le téléphone")
                 }
             }
+            OutlinedButton(
+                onClick = { viewModel.runDemoTranscription(context) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = modelLoaded && !isBusy && !recording
+            ) {
+                Text("Tester le moteur avec l'audio de démonstration (anglais, Internet requis)")
+            }
+
             Text(
                 "Les fichiers audio longs sont décodés et transcrits par blocs de 30 secondes. Le texte apparaît au fur et à mesure du traitement de ces blocs.",
                 style = MaterialTheme.typography.bodySmall,
@@ -485,8 +493,13 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                     OutlinedButton(onClick = { viewModel.analyzeCurrent("ideas") }, modifier = Modifier.weight(1f), enabled = !isBusy) {
                         Text("Idées clés")
                     }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(onClick = { viewModel.analyzeCurrent("tasks") }, modifier = Modifier.weight(1f), enabled = !isBusy) {
                         Text("Actions")
+                    }
+                    OutlinedButton(onClick = { viewModel.analyzeCurrent("flashcards") }, modifier = Modifier.weight(1f), enabled = !isBusy) {
+                        Text("Fiches de révision")
                     }
                 }
                 if (analysisText.isNotBlank()) {
