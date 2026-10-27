@@ -51,6 +51,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
     val highAccuracy by viewModel.highAccuracy.collectAsState()
     val personalNotes by viewModel.personalNotes.collectAsState()
     val analysisText by viewModel.analysisText.collectAsState()
+    val translatedText by viewModel.translatedText.collectAsState()
     val isBusy by viewModel.isBusy.collectAsState()
 
     var recording by remember { mutableStateOf(false) }
@@ -61,6 +62,8 @@ fun TranscribeScreen(viewModel: MainViewModel) {
     var saveNotes by remember { mutableStateOf("") }
     var modelMenuExpanded by remember { mutableStateOf(false) }
     var languageMenuExpanded by remember { mutableStateOf(false) }
+    var translationMenuExpanded by remember { mutableStateOf(false) }
+    var translationTarget by remember { mutableStateOf("en") }
     var showSubtitles by remember { mutableStateOf(false) }
     var showNotes by remember { mutableStateOf(false) }
     var showModelDeleteConfirmation by remember { mutableStateOf(false) }
@@ -502,6 +505,79 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                         Text("Fiches de révision")
                     }
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        OutlinedButton(
+                            onClick = { translationMenuExpanded = true },
+                            enabled = !isBusy && !recording
+                        ) {
+                            Text("Vers : ${translationLabel(translationTarget)}")
+                        }
+                        DropdownMenu(
+                            expanded = translationMenuExpanded,
+                            onDismissRequest = { translationMenuExpanded = false }
+                        ) {
+                            listOf(
+                                "ar" to "Arabe",
+                                "de" to "Allemand",
+                                "en" to "Anglais",
+                                "es" to "Espagnol",
+                                "fr" to "Français",
+                                "hi" to "Hindi",
+                                "id" to "Indonésien",
+                                "it" to "Italien",
+                                "ja" to "Japonais",
+                                "ko" to "Coréen",
+                                "nl" to "Néerlandais",
+                                "pl" to "Polonais",
+                                "pt" to "Portugais",
+                                "ru" to "Russe",
+                                "th" to "Thaï",
+                                "tr" to "Turc",
+                                "uk" to "Ukrainien",
+                                "vi" to "Vietnamien",
+                                "zh" to "Chinois"
+                            ).forEach { (code, label) ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    onClick = {
+                                        translationTarget = code
+                                        translationMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Button(
+                        onClick = { viewModel.translateCurrentText(translationTarget) },
+                        enabled = !isBusy && !recording && currentText.isNotBlank()
+                    ) {
+                        Text("Traduire")
+                    }
+                }
+                Text(
+                    "Le modèle de traduction peut être téléchargé au premier usage. Ensuite, la traduction utilise ce modèle local.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (translatedText.isNotBlank()) {
+                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Traduction", style = MaterialTheme.typography.titleMedium)
+                            Text(translatedText)
+                            TextButton(onClick = {
+                                val clip = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clip.setPrimaryClip(ClipData.newPlainText("Learn translation", translatedText))
+                                scope.launch { snackbarHostState.showSnackbar("Traduction copiée.") }
+                            }) { Text("Copier la traduction") }
+                        }
+                    }
+                }
+
                 if (analysisText.isNotBlank()) {
                     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -632,6 +708,29 @@ private fun writeExport(
         viewModel.setStatus("Export impossible : ${error.message ?: "erreur d'écriture"}.")
         scope.launch { snackbarHostState.showSnackbar("Échec de l'export.") }
     }
+}
+
+private fun translationLabel(code: String): String = when (code) {
+    "ar" -> "Arabe"
+    "de" -> "Allemand"
+    "en" -> "Anglais"
+    "es" -> "Espagnol"
+    "fr" -> "Français"
+    "hi" -> "Hindi"
+    "id" -> "Indonésien"
+    "it" -> "Italien"
+    "ja" -> "Japonais"
+    "ko" -> "Coréen"
+    "nl" -> "Néerlandais"
+    "pl" -> "Polonais"
+    "pt" -> "Portugais"
+    "ru" -> "Russe"
+    "th" -> "Thaï"
+    "tr" -> "Turc"
+    "uk" -> "Ukrainien"
+    "vi" -> "Vietnamien"
+    "zh" -> "Chinois"
+    else -> code
 }
 
 private fun languageLabel(code: String): String = when (code) {
