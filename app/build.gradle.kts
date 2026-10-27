@@ -6,6 +6,17 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val keystoreFile = file("${rootDir}/debug.keystore")
+if (!keystoreFile.exists()) {
+    val base64File = file("${rootDir}/debug.keystore.base64")
+    if (base64File.exists()) {
+        try {
+            val bytes = Base64.getDecoder().decode(base64File.readText().trim())
+            keystoreFile.writeBytes(bytes)
+        } catch (_: Exception) {}
+    }
+}
+
 android {
     namespace = "com.kidasniger.learn"
     compileSdk = 34
@@ -19,29 +30,17 @@ android {
     }
 
     signingConfigs {
-        create("debugConfig") {
-            val keystoreFile = file("${rootDir}/debug.keystore")
-            if (!keystoreFile.exists()) {
-                val base64File = file("${rootDir}/debug.keystore.base64")
-                if (base64File.exists()) {
-                    try {
-                        val bytes = Base64.getDecoder().decode(base64File.readText().trim())
-                        keystoreFile.writeBytes(bytes)
-                    } catch (_: Exception) {}
-                }
-            }
-            if (keystoreFile.exists()) {
-                storeFile = keystoreFile
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
-            }
+        getByName("debug") {
+            storeFile = keystoreFile
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("debugConfig")
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
