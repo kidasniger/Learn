@@ -27,6 +27,8 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -69,6 +71,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         Thread(runnable, "whisper-engine").apply { isDaemon = true }
     }
     private val preferences = application.getSharedPreferences("learn_preferences", Context.MODE_PRIVATE)
+    private val draftPreferences = application.getSharedPreferences("learn_draft", Context.MODE_PRIVATE)
+    private var draftSaveJob: Job? = null
     private val modelsDirectory = File(application.filesDir, "models").apply { mkdirs() }
     private val legacyModelFile = File(application.filesDir, "model.bin")
     private val pendingModelFile = File(application.filesDir, "model.bin.pending")
@@ -125,6 +129,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
+        val savedDraft = draftPreferences.getString("text", "").orEmpty()
+        if (savedDraft.isNotBlank()) {
+            _currentText.value = savedDraft
+            _currentSegments.value = TranscriptFormats.deserialize(
+                draftPreferences.getString("segments", "").orEmpty()
+            ).ifEmpty { listOf(TranscriptSegment(0L, 1_000L, savedDraft)) }
+            _personalNotes.value = draftPreferences.getString("notes", "").orEmpty()
+            textWasEdited = draftPreferences.getBoolean("edited", false)
+            _statusText.value = "Brouillon récupéré depuis la session précédente."
+        }
+
         refreshAvailableModels()
 
         val initialFile = modelFile
@@ -531,10 +546,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         textWasEdited = true
         _analysisText.value = ""
         _translatedText.value = ""
+        scheduleDraftSave()
     }
 
     fun setPersonalNotes(notes: String) {
         _personalNotes.value = notes
+        scheduleDraftSave()
     }
 
     fun clearCurrentTranscription() {
@@ -543,6 +560,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _analysisText.value = ""
         _translatedText.value = ""
         textWasEdited = false
+        persistDraftNow()
+    }
+
+    private fun scheduleDraftSave() {
+        draftSaveJob?.cancel()
+        draftSaveJob = viewModelScope.launch {
+            delay(400)
+            writeDraftNow()
+        }
+    }
+
+    private fun persistDraftNow() {
+        draftSaveJob?.cancel()
+        draftSaveJob = null
+        writeDraftNow()
+    }
+
+    private fun writeDraftNow() {
+        val text = _currentText.value
+        val editor = draftPreferences.edit()
+        if (text.isBlank() && _currentSegments.value.isEmpty() && _personalNotes.value.isBlank()) {
+            editor.clear().apply()
+            return
+        }
+        editor
+            .putString("text", text)
+            .putString("segments", TranscriptFormats.serialize(_currentSegments.value))
+            .putString("notes", _personalNotes.value)
+            .putBoolean("edited", textWasEdited)
+            .apply()
     }
 
     private fun exportableSegments(): List<TranscriptSegment> {
@@ -869,7 +916,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     favorite = false,
                     folder = folder.trim().ifBlank { "Général" },
                     notes = notes.trim(),
-                    segments = TranscriptFormats.serialize(parts)
+                    segments = TranscriptFormats.serialize(parts),
+                    lastOpenedAt = System.currentTimeMillis()
                 )
             )
         }
@@ -885,6 +933,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _translatedText.value = ""
         textWasEdited = false
         setLanguage(item.language.takeIf { it in SUPPORTED_LANGUAGES } ?: "auto")
+        scheduleDraftSave()
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.update(item.copy(lastOpenedAt = System.currentTimeMillis()))
+        }
         _statusText.value = "Transcription ouverte : ${item.title}"
     }
 
@@ -943,6 +995,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        persistDraftNow()
         try {
             engineExecutor.execute {
                 freeNativeContext(ctx)
