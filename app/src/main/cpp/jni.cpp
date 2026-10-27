@@ -129,10 +129,9 @@ Java_com_kidasniger_learn_WhisperLib_transcribeSegments(
         return env->NewObjectArray(0, stringClass, nullptr);
     }
 
-    whisper_sampling_strategy strategy = highAccuracy == JNI_TRUE
-        ? WHISPER_SAMPLING_BEAM_SEARCH
-        : WHISPER_SAMPLING_GREEDY;
-    whisper_full_params params = whisper_full_default_params(strategy);
+    whisper_full_params params = whisper_full_default_params(
+        highAccuracy == JNI_TRUE ? WHISPER_SAMPLING_BEAM_SEARCH : WHISPER_SAMPLING_GREEDY
+    );
     params.print_realtime = false;
     params.print_progress = false;
     params.print_timestamps = false;
