@@ -1,6 +1,8 @@
 package com.kidasniger.learn.ui
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -9,9 +11,11 @@ import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -19,6 +23,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -38,11 +43,13 @@ fun TranscribeScreen(viewModel: MainViewModel) {
     val modelLoaded by viewModel.modelLoaded.collectAsState()
     val currentText by viewModel.currentText.collectAsState()
     val isBusy by viewModel.isBusy.collectAsState()
+    val selectedLang by viewModel.selectedLang.collectAsState()
 
     var recording by remember { mutableStateOf(false) }
     var saveDialogShown by remember { mutableStateOf(false) }
     var saveTitle by remember { mutableStateOf("") }
     var downloadMenuExpanded by remember { mutableStateOf(false) }
+    var langMenuExpanded by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -50,6 +57,18 @@ fun TranscribeScreen(viewModel: MainViewModel) {
     var recordingThread by remember { mutableStateOf<Thread?>(null) }
     val recordingFinalized = remember { AtomicBoolean(true) }
     val chunks = remember { Collections.synchronizedList(ArrayList<ShortArray>()) }
+
+    // Pulsing animation for recording indicator
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseScale"
+    )
 
     val pickModelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -74,14 +93,46 @@ fun TranscribeScreen(viewModel: MainViewModel) {
         }
     }
 
+    val languages = mapOf(
+        "fr" to "Français",
+        "en" to "Anglais",
+        "es" to "Espagnol",
+        "de" to "Allemand",
+        "it" to "Italien",
+        "pt" to "Portugais"
+    )
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("Transcription audio (Whisper)") },
+                title = { Text("Transcription & Apprentissage") },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
+                ),
+                actions = {
+                    Box {
+                        TextButton(onClick = { langMenuExpanded = true }) {
+                            Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(languages[selectedLang] ?: selectedLang.uppercase())
+                        }
+                        DropdownMenu(
+                            expanded = langMenuExpanded,
+                            onDismissRequest = { langMenuExpanded = false }
+                        ) {
+                            languages.forEach { (code, name) ->
+                                DropdownMenuItem(
+                                    text = { Text(name) },
+                                    onClick = {
+                                        viewModel.setLanguage(code)
+                                        langMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
             )
         }
     ) { padding ->
@@ -96,14 +147,36 @@ fun TranscribeScreen(viewModel: MainViewModel) {
         ) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                colors = CardDefaults.cardColors(
+                    containerColor = if (recording) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+                    else MaterialTheme.colorScheme.surfaceVariant
+                )
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("Statut du moteur", style = MaterialTheme.typography.titleMedium)
-                    Text(statusText, style = MaterialTheme.typography.bodyMedium)
+                    if (recording) {
+                        Box(
+                            modifier = Modifier
+                                .size(16.dp)
+                                .scale(pulseScale)
+                                .background(MaterialTheme.colorScheme.error, CircleShape)
+                        )
+                    } else {
+                        Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            if (recording) "Enregistrement en cours..." else "Statut du moteur",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(statusText, style = MaterialTheme.typography.bodyMedium)
+                    }
                 }
             }
 
@@ -119,14 +192,14 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                     ) {
                         Icon(Icons.Default.Download, contentDescription = null)
                         Spacer(Modifier.width(4.dp))
-                        Text("Télécharger le modèle")
+                        Text("Modèle")
                     }
                     DropdownMenu(
                         expanded = downloadMenuExpanded,
                         onDismissRequest = { downloadMenuExpanded = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Tiny Q8 — le plus rapide (~42 Mo)") },
+                            text = { Text("Tiny Q8 — rapide (~42 Mo)") },
                             onClick = {
                                 downloadMenuExpanded = false
                                 viewModel.downloadModel(
@@ -144,7 +217,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Small Q5 — plus précis, plus lourd (~181 Mo)") },
+                            text = { Text("Small Q5 — précis (~181 Mo)") },
                             onClick = {
                                 downloadMenuExpanded = false
                                 viewModel.downloadModel(
@@ -153,7 +226,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Importer depuis l'appareil (.bin)") },
+                            text = { Text("Importer (.bin)") },
                             onClick = {
                                 downloadMenuExpanded = false
                                 pickModelLauncher.launch(arrayOf("*/*"))
@@ -226,17 +299,45 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                     .fillMaxWidth()
                     .height(300.dp)
             ) {
-                Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-                    if (currentText.isEmpty()) {
-                        Text(
-                            "Le texte transcrit apparaîtra ici...",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                            modifier = Modifier.align(Alignment.Center)
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = currentText,
+                        onValueChange = { viewModel.updateCurrentText(it) },
+                        placeholder = {
+                            Text("Le texte transcrit apparaîtra ici et est modifiable...")
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
                         )
-                    } else {
-                        SelectionContainer(modifier = Modifier.fillMaxSize()) {
-                            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                                Text(currentText, style = MaterialTheme.typography.bodyLarge)
+                    )
+
+                    if (currentText.isNotEmpty()) {
+                        val wordCount = currentText.trim().split("\\s+".toRegex()).size
+                        val charCount = currentText.length
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "$wordCount mots • $charCount caractères",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            TextButton(
+                                onClick = { viewModel.updateCurrentText("") },
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Text("Effacer", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
@@ -244,17 +345,38 @@ fun TranscribeScreen(viewModel: MainViewModel) {
             }
 
             if (currentText.isNotEmpty()) {
-                Button(
-                    onClick = { saveDialogShown = true },
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = !isBusy && !recording,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondary
-                    )
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.Save, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Sauvegarder dans l'historique")
+                    Button(
+                        onClick = { saveDialogShown = true },
+                        modifier = Modifier.weight(1f),
+                        enabled = !isBusy && !recording,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondary
+                        )
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Sauvegarder")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, "Transcription Whisper Learn")
+                                putExtra(Intent.EXTRA_TEXT, currentText)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Partager la transcription"))
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Partager")
+                    }
                 }
             }
         }
@@ -278,7 +400,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                     viewModel.saveCurrentTranscription(saveTitle)
                     saveDialogShown = false
                     saveTitle = ""
-                    scope.launch { snackbarHostState.showSnackbar("Transcription sauvegardée.") }
+                    scope.launch { snackbarHostState.showSnackbar("Transcription sauvegardée dans l'historique.") }
                 }) {
                     Text("Enregistrer")
                 }

@@ -38,7 +38,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         Thread(runnable, "whisper-engine").apply { isDaemon = true }
     }
     private var ctx = 0L
-    private val lang = "fr"
+    private val _selectedLang = MutableStateFlow("fr")
+    val selectedLang: StateFlow<String> = _selectedLang
+
+    fun setLanguage(newLang: String) {
+        _selectedLang.value = newLang
+    }
+
+    fun updateCurrentText(newText: String) {
+        _currentText.value = newText
+    }
 
     val modelFile: File
         get() = File(getApplication<Application>().filesDir, "model.bin")
@@ -408,16 +417,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
         val startedAt = SystemClock.elapsedRealtime()
+        val currentLang = _selectedLang.value
         viewModelScope.launch {
             try {
                 val text = onEngine {
                     if (ctx == 0L) throw IllegalStateException("Le moteur Whisper n'est pas chargé.")
-                    WhisperLib.transcribe(ctx, audio, lang, threads).trim()
+                    WhisperLib.transcribe(ctx, audio, currentLang, threads).trim()
                 }
                 val elapsedSeconds = (SystemClock.elapsedRealtime() - startedAt) / 1000.0
                 if (text.isBlank()) {
                     _statusText.value =
-                        "Aucun texte obtenu. Parlez près du micro en français puis réessayez."
+                        "Aucun texte obtenu. Parlez près du micro puis réessayez."
                 } else {
                     appendTranscriptionResult(text)
                     _statusText.value = "Transcription terminée en " +
@@ -437,6 +447,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun saveCurrentTranscription(title: String) {
         val text = _currentText.value
         if (text.isBlank()) return
+        val currentLang = _selectedLang.value
         viewModelScope.launch(Dispatchers.IO) {
             repository.insert(
                 TranscriptionEntity(
@@ -449,7 +460,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         title
                     },
                     text = text,
-                    language = lang
+                    language = currentLang
                 )
             )
         }
