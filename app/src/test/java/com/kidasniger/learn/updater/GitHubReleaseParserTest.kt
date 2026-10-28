@@ -35,20 +35,19 @@ class GitHubReleaseParserTest {
     }
 
     @Test fun supportsChecksumSidecarWhenAssetDigestIsNotPublished() {
-        val digestMember = "\"digest\":\"sha256:${"a".repeat(64)}\""
-        val json = validRelease().replace(digestMember, "\"digest\":\"\"")
-            .replace(
-                """          ]
-        }""",
-                """            ,{
-              "name":"Learn-v1.4.0.apk.sha256",
-              "size":88,
-              "browser_download_url":"https://github.com/kidasniger/Learn/releases/download/v1.4.0/Learn-v1.4.0.apk.sha256",
-              "content_type":"text/plain"
-            }
-          ]
-        }"""
-            )
+        val digestMember = "\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
+        val withoutDigest = validRelease().replace(digestMember, "\"digest\":\"\"")
+        val checksumAsset = """,
+  {
+    "name":"Learn-v1.4.0.apk.sha256",
+    "size":88,
+    "browser_download_url":"https://github.com/kidasniger/Learn/releases/download/v1.4.0/Learn-v1.4.0.apk.sha256",
+    "content_type":"text/plain"
+  }""".trimIndent()
+        val insertAt = withoutDigest.lastIndexOf("]")
+        assertTrue(insertAt >= 0)
+        val json = withoutDigest.substring(0, insertAt) + checksumAsset + "\n" + withoutDigest.substring(insertAt)
+
         val release = GitHubReleaseParser.parse(json)
         assertEquals("https://github.com/kidasniger/Learn/releases/download/v1.4.0/Learn-v1.4.0.apk.sha256", release.checksumUrl)
         assertEquals("b".repeat(64), GitHubReleaseParser.parseChecksum("b".repeat(64) + "  Learn-v1.4.0.apk"))
