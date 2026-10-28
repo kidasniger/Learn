@@ -94,6 +94,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 engineExecutor.execute {
                     try {
                         loadModelBlocking(modelFile)
+                    } catch (error: OutOfMemoryError) {
+                        _modelLoaded.value = false
+                        _statusText.value = "Mémoire insuffisante pour charger le modèle. Fermez les autres applications ou choisissez Tiny Q8."
+                    } catch (error: LinkageError) {
+                        _modelLoaded.value = false
+                        _statusText.value = "Moteur natif indisponible : bibliothèques incompatibles avec cet appareil."
+                    } catch (error: Exception) {
+                        _modelLoaded.value = false
+                        _statusText.value = "Échec du chargement du modèle : " + safeMessage(error)
                     } finally {
                         _isBusy.value = false
                     }
