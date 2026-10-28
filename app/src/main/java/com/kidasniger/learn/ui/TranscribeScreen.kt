@@ -149,6 +149,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
             amplitude = 0f
             chunks.clear()
             startRec(
+                context,
                 viewModel,
                 { rec -> recorderInstance = rec },
                 { thread -> recordingThread = thread },
@@ -333,6 +334,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                                 recording = true
                                 chunks.clear()
                                 startRec(
+                                    context,
                                     viewModel,
                                     { rec -> recorderInstance = rec },
                                     { thread -> recordingThread = thread },
@@ -587,6 +589,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
 }
 
 private fun startRec(
+    context: Context,
     viewModel: MainViewModel,
     setRecorder: (AudioRecord?) -> Unit,
     setThread: (Thread?) -> Unit,
@@ -596,6 +599,13 @@ private fun startRec(
     onAmplitude: (Float) -> Unit,
     setState: (Boolean) -> Unit
 ) {
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        viewModel.setStatus("Permission microphone non accordée. Autorisez-la puis réessayez.")
+        recordingFinalized.set(true)
+        setState(false)
+        return
+    }
+
     val minimumBuffer = AudioRecord.getMinBufferSize(
         SAMPLE_RATE,
         AudioFormat.CHANNEL_IN_MONO,
