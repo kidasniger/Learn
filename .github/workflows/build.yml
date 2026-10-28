@@ -1,13 +1,18 @@
-name: Build APK
+name: Build and test Learn
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: learn-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -20,8 +25,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # The debug variant deliberately uses a CI-only debug key.
-      - name: Generate debug signing keystore
+      - name: Generate temporary debug keystore
         run: |
           keytool -genkeypair -v \
             -keystore debug.keystore \
@@ -38,10 +42,10 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
-      - name: Build and test debug APK
-        run: gradle assembleDebug testDebugUnitTest --no-daemon
+      - name: Run unit tests, lint, and build debug APK
+        run: gradle testDebugUnitTest lintDebug assembleDebug --no-daemon
 
-      - name: Verify debug APK
+      - name: Verify debug APK exists
         run: test -s app/build/outputs/apk/debug/app-debug.apk
 
       - uses: actions/upload-artifact@v4
@@ -51,8 +55,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  signed-release:
-    if: ${{ github.ref == 'refs/heads/main' }}
+  signed-release-build:
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -82,9 +86,7 @@ jobs:
           test -n "${ANDROID_KEY_PASSWORD:-}" || { echo "::error::Missing secret ANDROID_KEY_PASSWORD"; exit 1; }
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
           chmod 600 "$ANDROID_KEYSTORE_PATH"
-          keytool -list -keystore "$ANDROID_KEYSTORE_PATH" \
-            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
-            -alias "$ANDROID_KEY_ALIAS" >/dev/null
+          keytool -list -keystore "$ANDROID_KEYSTORE_PATH" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
           echo "Release keystore restored and verified."
 
       - uses: gradle/actions/setup-gradle@v4
@@ -104,13 +106,13 @@ jobs:
           test -s "$APK"
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner -print -quit)"
-          test -n "$APKSIGNER" || { echo "::error::apksigner was not found in the Android SDK"; exit 1; }
+          test -n "$APKSIGNER" || { echo "::error::apksigner was not found"; exit 1; }
           "$APKSIGNER" verify --verbose "$APK"
           "$APKSIGNER" verify --print-certs "$APK"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: learn-release-signed-apk
+          name: learn-release-signed-apk-preflight
           path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14

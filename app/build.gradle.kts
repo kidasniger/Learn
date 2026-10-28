@@ -4,16 +4,17 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val defaultVersionCode = 5
+val defaultVersionName = "1.4.0"
 val releaseStorePath = System.getenv("ANDROID_KEYSTORE_PATH")
 val releaseStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
 val releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
 val releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
 val hasReleaseSigning = listOf(
-    releaseStorePath,
-    releaseStorePassword,
-    releaseKeyAlias,
-    releaseKeyPassword
+    releaseStorePath, releaseStorePassword, releaseKeyAlias, releaseKeyPassword
 ).all { !it.isNullOrBlank() }
+val versionCodeOverride = (project.findProperty("versionCodeOverride") as? String)?.toIntOrNull()
+val versionNameOverride = project.findProperty("versionNameOverride") as? String
 
 android {
     namespace = "com.kidasniger.learn"
@@ -24,8 +25,8 @@ android {
         applicationId = "com.kidasniger.learn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.3.0"
+        versionCode = versionCodeOverride ?: defaultVersionCode
+        versionName = versionNameOverride ?: defaultVersionName
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
@@ -59,9 +60,7 @@ android {
         }
         release {
             isMinifyEnabled = false
-            if (hasReleaseSigning) {
-                signingConfig = signingConfigs.getByName("releaseConfig")
-            }
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("releaseConfig")
         }
     }
 
@@ -75,17 +74,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    kotlinOptions { jvmTarget = "17" }
 
     buildFeatures {
         compose = true
         buildConfig = true
     }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 }
 
 dependencies {
@@ -106,4 +101,7 @@ dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

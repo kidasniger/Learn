@@ -14,25 +14,54 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kidasniger.learn.ui.AboutScreen
+import com.kidasniger.learn.ui.AppUpdateDialog
 import com.kidasniger.learn.ui.HistoryScreen
 import com.kidasniger.learn.ui.MainViewModel
 import com.kidasniger.learn.ui.TranscribeScreen
 import com.kidasniger.learn.ui.theme.WhisperLearnTheme
+import com.kidasniger.learn.updater.AppUpdateViewModel
+import com.kidasniger.learn.updater.UpdateCheckState
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            val prefs = remember { getSharedPreferences("learn_preferences", MODE_PRIVATE) }
-            var themeMode by remember { mutableIntStateOf(prefs.getInt("theme_mode", 0)) }
-            var showWelcome by remember { mutableStateOf(!prefs.getBoolean("welcome_completed", false)) }
+            val preferences = remember { getSharedPreferences("learn_preferences", MODE_PRIVATE) }
+            var themeMode by remember { mutableIntStateOf(preferences.getInt("theme_mode", 0)) }
+            var showWelcome by remember { mutableStateOf(!preferences.getBoolean("welcome_completed", false)) }
             val darkTheme = when (themeMode) { 1 -> false; 2 -> true; else -> isSystemInDarkTheme() }
+
             WhisperLearnTheme(darkTheme = darkTheme, dynamicColor = themeMode == 0) {
                 val viewModel: MainViewModel = viewModel()
+                val updateViewModel: AppUpdateViewModel = viewModel()
+                val updateCheckState by updateViewModel.checkState.collectAsState()
+                val downloadState by updateViewModel.downloadState.collectAsState()
+                val dismissedVersion by updateViewModel.dismissedVersion.collectAsState()
+                val lifecycleOwner = LocalLifecycleOwner.current
                 var selectedTab by remember { mutableIntStateOf(0) }
+
+                LaunchedEffect(showWelcome) {
+                    if (!showWelcome) {
+                        delay(1_200L)
+                        updateViewModel.checkAutomaticallyIfDue()
+                    }
+                }
+
+                DisposableEffect(lifecycleOwner, updateViewModel) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) updateViewModel.onAppResumed()
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                }
+
                 Scaffold(modifier = Modifier.fillMaxSize(), bottomBar = {
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                         NavigationBarItem(selected = selectedTab == 0, onClick = { selectedTab = 0 },
@@ -47,17 +76,23 @@ class MainActivity : ComponentActivity() {
                         when (selectedTab) {
                             0 -> TranscribeScreen(viewModel)
                             1 -> HistoryScreen(viewModel)
-                            else -> AboutScreen(viewModel, themeMode) { mode ->
-                                themeMode = mode
-                                prefs.edit().putInt("theme_mode", mode).apply()
-                            }
+                            else -> AboutScreen(
+                                viewModel = viewModel,
+                                themeMode = themeMode,
+                                onThemeModeChange = { mode ->
+                                    themeMode = mode
+                                    preferences.edit().putInt("theme_mode", mode).apply()
+                                },
+                                updateViewModel = updateViewModel
+                            )
                         }
                     }
                 }
+
                 if (showWelcome) AlertDialog(
                     onDismissRequest = {
                         showWelcome = false
-                        prefs.edit().putBoolean("welcome_completed", true).apply()
+                        preferences.edit().putBoolean("welcome_completed", true).apply()
                     },
                     icon = { Icon(Icons.Default.Mic, contentDescription = null) },
                     title = { Text("Bienvenue dans Learn") },
@@ -65,10 +100,26 @@ class MainActivity : ComponentActivity() {
                     confirmButton = {
                         Button(onClick = {
                             showWelcome = false
-                            prefs.edit().putBoolean("welcome_completed", true).apply()
+                            preferences.edit().putBoolean("welcome_completed", true).apply()
                         }) { Text("Commencer") }
                     }
                 )
+
+                val updateState = updateCheckState
+                if (
+                    !showWelcome &&
+                    updateState is UpdateCheckState.UpdateAvailable &&
+                    dismissedVersion != updateState.info.version
+                ) {
+                    AppUpdateDialog(
+                        info = updateState.info,
+                        downloadState = downloadState,
+                        onDismiss = { updateViewModel.dismiss(updateState.info.version) },
+                        onDownload = { updateViewModel.download(updateState.info) },
+                        onCancelDownload = updateViewModel::cancelDownload,
+                        onInstall = updateViewModel::install
+                    )
+                }
             }
         }
     }

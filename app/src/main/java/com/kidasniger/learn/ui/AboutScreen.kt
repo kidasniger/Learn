@@ -19,10 +19,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.kidasniger.learn.BuildConfig
+import com.kidasniger.learn.updater.AppUpdateViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AboutScreen(viewModel: MainViewModel, themeMode: Int, onThemeModeChange: (Int) -> Unit) {
+fun AboutScreen(
+    viewModel: MainViewModel,
+    themeMode: Int,
+    onThemeModeChange: (Int) -> Unit,
+    updateViewModel: AppUpdateViewModel
+) {
     val context = LocalContext.current
     val status by viewModel.statusText.collectAsState()
     val modelLoaded by viewModel.modelLoaded.collectAsState()
@@ -36,7 +43,7 @@ fun AboutScreen(viewModel: MainViewModel, themeMode: Int, onThemeModeChange: (In
             verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Learn v1.3.0", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("Learn v${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     Text("Transcription vocale locale. Vos enregistrements et brouillons restent sur l'appareil.",
                         style = MaterialTheme.typography.bodyMedium)
                 }
@@ -57,6 +64,7 @@ fun AboutScreen(viewModel: MainViewModel, themeMode: Int, onThemeModeChange: (In
                     }
                 }
             }
+            AppUpdateCard(updateViewModel, Modifier.fillMaxWidth())
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Diagnostic rapide", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -90,6 +98,7 @@ fun AboutScreen(viewModel: MainViewModel, themeMode: Int, onThemeModeChange: (In
         }
     }
 }
+
 @Composable
 private fun StatusRow(label: String, value: String, ok: Boolean) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
