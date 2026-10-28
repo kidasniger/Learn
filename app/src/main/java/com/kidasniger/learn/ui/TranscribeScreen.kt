@@ -774,21 +774,24 @@ private fun stopAndTranscribe(
 }
 
 private fun makeSubtitles(text: String, webVtt: Boolean): String {
-    val sentences = text.replace("\\r", " ").replace("\\n", " ")
-        .split(Regex("(?<=[.!?])\\s+")).map { it.trim() }.filter { it.isNotBlank() }
+    val sentences = text.replace("\r", " ").replace("\n", " ")
+        .split(Regex("(?<=[.!?])\\s+"))
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
     val out = StringBuilder()
-    if (webVtt) out.append("WEBVTT\\n\\n")
+    if (webVtt) out.append("WEBVTT\n\n")
     var timeMs = 0L
     sentences.forEachIndexed { index, sentence ->
         val duration = maxOf(1800L, sentence.split("\\s+".toRegex()).size * 320L)
-        if (!webVtt) out.append(index + 1).append('\\n')
+        if (!webVtt) out.append(index + 1).append('\n')
         out.append(formatSubtitleTime(timeMs, webVtt)).append(" --> ")
-            .append(formatSubtitleTime(timeMs + duration, webVtt)).append('\\n')
-            .append(sentence).append("\\n\\n")
+            .append(formatSubtitleTime(timeMs + duration, webVtt)).append('\n')
+            .append(sentence).append("\n\n")
         timeMs += duration
     }
     return out.toString()
 }
+
 private fun formatSubtitleTime(ms: Long, webVtt: Boolean): String {
     val h = ms / 3_600_000
     val m = (ms / 60_000) % 60
@@ -796,6 +799,7 @@ private fun formatSubtitleTime(ms: Long, webVtt: Boolean): String {
     val millis = ms % 1_000
     return "%02d:%02d:%02d%s%03d".format(Locale.ROOT, h, m, s, if (webVtt) "." else ",", millis)
 }
+
 private fun writeTextPdf(output: OutputStream, text: String) {
     val document = PdfDocument()
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 12f }
