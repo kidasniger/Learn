@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.graphics.Paint
+import android.graphics.pdf.PdfDocument
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,8 +28,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.OutputStream
+import java.util.Locale
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -46,6 +54,14 @@ fun TranscribeScreen(viewModel: MainViewModel) {
     val selectedLang by viewModel.selectedLang.collectAsState()
 
     var recording by remember { mutableStateOf(false) }
+    var paused by remember { mutableStateOf(false) }
+    var elapsedSeconds by remember { mutableIntStateOf(0) }
+    var amplitude by remember { mutableFloatStateOf(0f) }
+    var importingAudio by remember { mutableStateOf(false) }
+    var clearDraftConfirmation by remember { mutableStateOf(false) }
+    var exportMenuExpanded by remember { mutableStateOf(false) }
+    var exportFormat by remember { mutableStateOf("txt") }
+    var subtitleMode by remember { mutableStateOf(false) }
     var saveDialogShown by remember { mutableStateOf(false) }
     var saveTitle by remember { mutableStateOf("") }
     var downloadMenuExpanded by remember { mutableStateOf(false) }
@@ -56,7 +72,15 @@ fun TranscribeScreen(viewModel: MainViewModel) {
     var recorderInstance by remember { mutableStateOf<AudioRecord?>(null) }
     var recordingThread by remember { mutableStateOf<Thread?>(null) }
     val recordingFinalized = remember { AtomicBoolean(true) }
+    val pauseRequested = remember { AtomicBoolean(false) }
     val chunks = remember { Collections.synchronizedList(ArrayList<ShortArray>()) }
+    LaunchedEffect(recording, paused) {
+        while (recording && !paused) { delay(1000); elapsedSeconds += 1 }
+    }
+    LaunchedEffect(recording, paused, amplitude) {
+        if (!recording || paused) amplitude = 0f
+        else { delay(140); amplitude = (amplitude * 0.78f).coerceAtLeast(0f) }
+    }
 
     // Pulsing animation for recording indicator
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -76,17 +100,59 @@ fun TranscribeScreen(viewModel: MainViewModel) {
         }
     }
 
+    val audioImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            importingAudio = true
+            viewModel.setStatus("Lecture du fichier audio…")
+            scope.launch {
+                try {
+                    val audio = withContext(Dispatchers.IO) { AudioFileDecoder.decode(context, uri) }
+                    importingAudio = false
+                    viewModel.setStatus("Audio prêt · ${audio.size / SAMPLE_RATE} seconde(s). Transcription lancée.")
+                    viewModel.transcribeAudio(audio) {}
+                } catch (error: Exception) {
+                    importingAudio = false
+                    viewModel.setStatus("Import audio impossible : ${error.message ?: "format non pris en charge"}.")
+                    snackbarHostState.showSnackbar("Impossible d'importer ce fichier audio.")
+                }
+            }
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        if (uri != null) scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use { output ->
+                        when (exportFormat) {
+                            "pdf" -> writeTextPdf(output, currentText)
+                            "srt" -> output.write(makeSubtitles(currentText, false).toByteArray(Charsets.UTF_8))
+                            "vtt" -> output.write(makeSubtitles(currentText, true).toByteArray(Charsets.UTF_8))
+                            else -> output.write(currentText.toByteArray(Charsets.UTF_8))
+                        }
+                    } ?: throw IllegalStateException("Impossible d'ouvrir le fichier.")
+                }
+                snackbarHostState.showSnackbar("Export terminé.")
+            } catch (error: Exception) {
+                snackbarHostState.showSnackbar("Export impossible : ${error.message ?: "erreur inconnue"}.")
+            }
+        }
+    }
+
     val micPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
             recordingFinalized.set(false)
+            pauseRequested.set(false)
             recording = true
+            paused = false
+            elapsedSeconds = 0
+            amplitude = 0f
             chunks.clear()
             startRec(
                 viewModel,
                 { rec -> recorderInstance = rec },
                 { thread -> recordingThread = thread },
-                chunks,
-                recordingFinalized
+                chunks, recordingFinalized, pauseRequested, { value -> amplitude = value }
             ) { recording = it }
         } else {
             viewModel.setStatus("Permission microphone refusée.")
@@ -94,6 +160,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
     }
 
     val languages = mapOf(
+        "auto" to "Auto-détection",
         "fr" to "Français",
         "en" to "Anglais",
         "es" to "Espagnol",
@@ -106,7 +173,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("Transcription & Apprentissage") },
+                title = { Column { Text("Learn", fontWeight = FontWeight.Bold); Text("Transcription vocale hors ligne", style = MaterialTheme.typography.labelSmall) } },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 ),
@@ -140,11 +207,17 @@ fun TranscribeScreen(viewModel: MainViewModel) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp)
+                .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Votre voix, en texte.", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("Enregistrez, transcrivez et gardez vos notes sur cet appareil.",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -263,8 +336,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                                     viewModel,
                                     { rec -> recorderInstance = rec },
                                     { thread -> recordingThread = thread },
-                                    chunks,
-                                    recordingFinalized
+                                    chunks, recordingFinalized, pauseRequested, { value -> amplitude = value }
                                 ) { recording = it }
                             } else {
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -290,14 +362,75 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                 }
             }
 
-            if (isBusy) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { audioImportLauncher.launch(arrayOf("audio/*")) },
+                    enabled = modelLoaded && !isBusy && !recording && !importingAudio,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.AudioFile, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Importer audio")
+                }
+                Text("Max. 20 min", modifier = Modifier.align(Alignment.CenterVertically),
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            if (recording) {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(if (paused) "Enregistrement en pause" else "Capture audio en direct",
+                                style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text("%02d:%02d".format(elapsedSeconds / 60, elapsedSeconds % 60), fontWeight = FontWeight.Bold)
+                        }
+                        Row(Modifier.fillMaxWidth().height(36.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                            repeat(25) { index ->
+                                val barHeight = (5f + amplitude * (20f + (index % 5) * 4f)).coerceIn(5f, 34f)
+                                Box(Modifier.padding(horizontal = 2.dp).width(3.dp).height(barHeight.dp).background(
+                                    if (paused) MaterialTheme.colorScheme.outlineVariant else MaterialTheme.colorScheme.primary, CircleShape))
+                            }
+                        }
+                        OutlinedButton(onClick = {
+                            if (!paused) {
+                                pauseRequested.set(true)
+                                try {
+                                    recorderInstance?.stop()
+                                    paused = true
+                                    amplitude = 0f
+                                    viewModel.setStatus("Enregistrement en pause. Reprenez ou terminez.")
+                                } catch (error: Exception) {
+                                    pauseRequested.set(false)
+                                    viewModel.setStatus("Pause impossible : ${error.message ?: "erreur microphone"}.")
+                                }
+                            } else {
+                                try {
+                                    recorderInstance?.startRecording()
+                                    pauseRequested.set(false)
+                                    paused = false
+                                    viewModel.setStatus("Enregistrement repris.")
+                                } catch (error: Exception) {
+                                    viewModel.setStatus("Reprise impossible : ${error.message ?: "erreur microphone"}.")
+                                }
+                            }
+                        }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(if (paused) Icons.Default.PlayArrow else Icons.Default.Pause, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (paused) "Reprendre" else "Mettre en pause")
+                        }
+                    }
+                }
+            }
+            val progressPercent = Regex("""(\d{1,3})%""").find(statusText)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            if (isBusy) {
+                if (progressPercent != null) LinearProgressIndicator(progress = progressPercent.coerceIn(0, 100) / 100f, modifier = Modifier.fillMaxWidth())
+                else LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            if (importingAudio) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
 
             OutlinedCard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(300.dp)
+                    .heightIn(min = 240.dp, max = 390.dp)
             ) {
                 Column(
                     modifier = Modifier
@@ -308,7 +441,7 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                         value = currentText,
                         onValueChange = { viewModel.updateCurrentText(it) },
                         placeholder = {
-                            Text("Le texte transcrit apparaîtra ici et est modifiable...")
+                            Text("Le texte apparaît pendant le traitement et le brouillon est sauvegardé automatiquement…")
                         },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -334,13 +467,40 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             TextButton(
-                                onClick = { viewModel.updateCurrentText("") },
+                                onClick = { clearDraftConfirmation = true },
                                 contentPadding = PaddingValues(0.dp)
                             ) {
                                 Text("Effacer", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
+                }
+            }
+
+            if (currentText.isNotBlank()) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(selected = subtitleMode, onClick = { subtitleMode = !subtitleMode },
+                        label = { Text("Sous-titres") }, leadingIcon = { Icon(Icons.Default.Subtitles, contentDescription = null) })
+                    Spacer(Modifier.weight(1f))
+                    Box {
+                        OutlinedButton(onClick = { exportMenuExpanded = true }) {
+                            Icon(Icons.Default.FileDownload, contentDescription = null); Spacer(Modifier.width(5.dp)); Text("Exporter")
+                        }
+                        DropdownMenu(exportMenuExpanded, onDismissRequest = { exportMenuExpanded = false }) {
+                            listOf("txt" to "Texte TXT", "pdf" to "Document PDF",
+                                "srt" to "SRT (horodatages estimés)", "vtt" to "VTT (horodatages estimés)").forEach { item ->
+                                DropdownMenuItem(text = { Text(item.second) }, onClick = {
+                                    exportFormat = item.first; exportMenuExpanded = false
+                                    exportLauncher.launch("learn-transcription.${item.first}")
+                                })
+                            }
+                        }
+                    }
+                }
+                if (subtitleMode) {
+                    Text("Les horodatages SRT/VTT sont estimés : le moteur ne fournit pas encore les horaires natifs.",
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                    Text(makeSubtitles(currentText, true), style = MaterialTheme.typography.bodySmall)
                 }
             }
 
@@ -382,6 +542,18 @@ fun TranscribeScreen(viewModel: MainViewModel) {
         }
     }
 
+    if (clearDraftConfirmation) AlertDialog(
+        onDismissRequest = { clearDraftConfirmation = false },
+        title = { Text("Effacer le brouillon ?") },
+        text = { Text("Le texte actuel sera supprimé. Cette action ne peut pas être annulée.") },
+        confirmButton = { TextButton(onClick = {
+            viewModel.updateCurrentText("")
+            clearDraftConfirmation = false
+            scope.launch { snackbarHostState.showSnackbar("Brouillon effacé.") }
+        }) { Text("Effacer", color = MaterialTheme.colorScheme.error) } },
+        dismissButton = { TextButton(onClick = { clearDraftConfirmation = false }) { Text("Annuler") } }
+    )
+
     if (saveDialogShown) {
         AlertDialog(
             onDismissRequest = { saveDialogShown = false },
@@ -420,6 +592,8 @@ private fun startRec(
     setThread: (Thread?) -> Unit,
     chunks: MutableList<ShortArray>,
     recordingFinalized: AtomicBoolean,
+    pauseRequested: AtomicBoolean,
+    onAmplitude: (Float) -> Unit,
     setState: (Boolean) -> Unit
 ) {
     val minimumBuffer = AudioRecord.getMinBufferSize(
@@ -471,7 +645,11 @@ private fun startRec(
             var totalSamples = 0
             var maximumReached = false
 
-            while (true) {
+            while (!recordingFinalized.get()) {
+                if (pauseRequested.get()) {
+                    try { Thread.sleep(60) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
+                    continue
+                }
                 val count = recorder.read(buffer, 0, buffer.size)
                 if (count > 0) {
                     val remaining = MAX_AUDIO_SAMPLES - totalSamples
@@ -484,11 +662,17 @@ private fun startRec(
                         chunks.add(buffer.copyOf(accepted))
                     }
                     totalSamples += accepted
+                    var peak = 0f
+                    for (sampleIndex in 0 until accepted) {
+                        peak = maxOf(peak, kotlin.math.abs(buffer[sampleIndex].toInt()) / 32768f)
+                    }
+                    Handler(Looper.getMainLooper()).post { onAmplitude(peak) }
                     if (totalSamples >= MAX_AUDIO_SAMPLES) {
                         maximumReached = true
                         break
                     }
                 } else {
+                    if (pauseRequested.get()) continue
                     if (count < 0 && !recordingFinalized.get()) {
                         Handler(Looper.getMainLooper()).post {
                             if (!recordingFinalized.get()) {
@@ -587,4 +771,67 @@ private fun stopAndTranscribe(
         return
     }
     viewModel.transcribeAudio(audio) {}
+}
+
+private fun makeSubtitles(text: String, webVtt: Boolean): String {
+    val sentences = text.replace("\\r", " ").replace("\\n", " ")
+        .split(Regex("(?<=[.!?])\\\\s+")).map { it.trim() }.filter { it.isNotBlank() }
+    val out = StringBuilder()
+    if (webVtt) out.append("WEBVTT\\n\\n")
+    var timeMs = 0L
+    sentences.forEachIndexed { index, sentence ->
+        val duration = maxOf(1800L, sentence.split("\\\\s+".toRegex()).size * 320L)
+        if (!webVtt) out.append(index + 1).append('\\n')
+        out.append(formatSubtitleTime(timeMs, webVtt)).append(" --> ")
+            .append(formatSubtitleTime(timeMs + duration, webVtt)).append('\\n')
+            .append(sentence).append("\\n\\n")
+        timeMs += duration
+    }
+    return out.toString()
+}
+private fun formatSubtitleTime(ms: Long, webVtt: Boolean): String {
+    val h = ms / 3_600_000
+    val m = (ms / 60_000) % 60
+    val s = (ms / 1_000) % 60
+    val millis = ms % 1_000
+    return "%02d:%02d:%02d%s%03d".format(Locale.ROOT, h, m, s, if (webVtt) "." else ",", millis)
+}
+private fun writeTextPdf(output: OutputStream, text: String) {
+    val document = PdfDocument()
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 12f }
+    val width = 595; val height = 842
+    var pageNumber = 0
+    var page: PdfDocument.Page? = null
+    var canvas: android.graphics.Canvas? = null
+    var y = 50f
+    fun startPage() {
+        pageNumber++
+        page = document.startPage(PdfDocument.PageInfo.Builder(width, height, pageNumber).create())
+        canvas = page!!.canvas
+        y = 50f
+        paint.isFakeBoldText = true
+        canvas!!.drawText("Learn · Transcription", 42f, y, paint)
+        paint.isFakeBoldText = false
+        y += 26f
+    }
+    fun finishPage() { page?.let { document.finishPage(it) }; page = null; canvas = null }
+    try {
+        startPage()
+        text.lines().forEach { raw ->
+            var line = raw
+            if (line.isBlank()) y += 18f
+            while (line.isNotEmpty()) {
+                if (y > height - 48f) { finishPage(); startPage() }
+                val chars = paint.breakText(line, true, 510f, null).coerceAtLeast(1)
+                canvas!!.drawText(line.take(chars), 42f, y, paint)
+                line = line.drop(chars).trimStart()
+                y += 18f
+            }
+        }
+        finishPage()
+        document.writeTo(output)
+    } finally {
+        try { finishPage() } catch (_: Exception) { }
+        document.close()
+    }
 }

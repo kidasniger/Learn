@@ -46,7 +46,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateCurrentText(newText: String) {
+        setCurrentDraft(newText)
+    }
+
+    private fun setCurrentDraft(newText: String) {
         _currentText.value = newText
+        draftPreferences.edit().putString("current_text", newText).apply()
     }
 
     val modelFile: File
@@ -63,7 +68,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _modelLoaded = MutableStateFlow(false)
     val modelLoaded: StateFlow<Boolean> = _modelLoaded
 
-    private val _currentText = MutableStateFlow("")
+    private val draftPreferences = application.getSharedPreferences("learn_drafts", android.content.Context.MODE_PRIVATE)
+    private val _currentText = MutableStateFlow(draftPreferences.getString("current_text", "").orEmpty())
     val currentText: StateFlow<String> = _currentText
 
     private val _isBusy = MutableStateFlow(false)
@@ -400,39 +406,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun transcribeAudio(audio: FloatArray, onDone: () -> Unit) {
-        if (audio.isEmpty()) {
-            _statusText.value = "Aucun audio à transcrire."
-            onDone()
-            return
-        }
-        if (!_modelLoaded.value) {
-            _statusText.value = "Chargez un modèle avant de transcrire."
-            onDone()
-            return
-        }
-        if (!beginOperation("Transcription en cours...")) {
-            onDone()
-            return
-        }
-
+        if (audio.isEmpty()) { _statusText.value = "Aucun audio à transcrire."; onDone(); return }
+        if (!_modelLoaded.value) { _statusText.value = "Chargez un modèle avant de transcrire."; onDone(); return }
+        if (!beginOperation("Préparation de la transcription...")) { onDone(); return }
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
         val startedAt = SystemClock.elapsedRealtime()
         val currentLang = _selectedLang.value
+        val originalText = _currentText.value
+        val segmentSamples = 20 * 16_000
+        val segmentCount = (audio.size + segmentSamples - 1) / segmentSamples
         viewModelScope.launch {
+            val completedText = StringBuilder()
             try {
-                val text = onEngine {
-                    if (ctx == 0L) throw IllegalStateException("Le moteur Whisper n'est pas chargé.")
-                    WhisperLib.transcribe(ctx, audio, currentLang, threads).trim()
+                for (segmentIndex in 0 until segmentCount) {
+                    val start = segmentIndex * segmentSamples
+                    val end = minOf(start + segmentSamples, audio.size)
+                    val piece = audio.copyOfRange(start, end)
+                    val pieceText = onEngine {
+                        if (ctx == 0L) throw IllegalStateException("Le moteur Whisper n'est pas chargé.")
+                        WhisperLib.transcribe(ctx, piece, currentLang, threads).trim()
+                    }
+                    if (pieceText.isNotBlank()) {
+                        if (completedText.isNotEmpty()) completedText.append("\n\n")
+                        completedText.append(pieceText)
+                        setCurrentDraft(listOf(originalText, completedText.toString()).filter { it.isNotBlank() }.joinToString("\n\n"))
+                    }
+                    _statusText.value = "Transcription en cours : ${((segmentIndex + 1) * 100) / segmentCount}% (segment ${segmentIndex + 1}/$segmentCount)"
                 }
-                val elapsedSeconds = (SystemClock.elapsedRealtime() - startedAt) / 1000.0
-                if (text.isBlank()) {
-                    _statusText.value =
-                        "Aucun texte obtenu. Parlez près du micro puis réessayez."
-                } else {
-                    appendTranscriptionResult(text)
-                    _statusText.value = "Transcription terminée en " +
-                        String.format(java.util.Locale.getDefault(), "%.1f", elapsedSeconds) + " s."
-                }
+                val seconds = (SystemClock.elapsedRealtime() - startedAt) / 1000.0
+                _statusText.value = if (completedText.isBlank()) "Aucun texte obtenu. Parlez près du micro puis réessayez."
+                    else "Transcription terminée en " + String.format(java.util.Locale.getDefault(), "%.1f", seconds) + " s."
             } catch (error: Exception) {
                 _statusText.value = "Erreur de transcription : " + safeMessage(error)
             } catch (error: LinkageError) {
