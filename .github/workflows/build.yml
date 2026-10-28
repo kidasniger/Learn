@@ -20,8 +20,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # The app's debug signingConfig points to ${rootDir}/debug.keystore.
-      # Generate a CI-only debug keystore because this file is intentionally not committed.
+      # The debug variant deliberately uses a CI-only debug key.
       - name: Generate debug signing keystore
         run: |
           keytool -genkeypair -v \
@@ -39,10 +38,10 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
-      - name: Build and test APK
+      - name: Build and test debug APK
         run: gradle assembleDebug testDebugUnitTest --no-daemon
 
-      - name: Verify APK
+      - name: Verify debug APK
         run: test -s app/build/outputs/apk/debug/app-debug.apk
 
       - uses: actions/upload-artifact@v4
@@ -52,33 +51,64 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  release:
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release:') }}
+  signed-release:
+    if: ${{ github.ref == 'refs/heads/main' }}
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+    env:
+      ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/learn-release.jks
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
         with:
-          name: learn-debug-apk
-          path: dist
+          distribution: temurin
+          java-version: "17"
 
-      - name: Verify release APK
-        run: test -s dist/app-debug.apk
+      - name: Restore private release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_KEYSTORE_BASE64:-}" || { echo "::error::Missing secret ANDROID_KEYSTORE_BASE64"; exit 1; }
+          test -n "${ANDROID_KEYSTORE_PASSWORD:-}" || { echo "::error::Missing secret ANDROID_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "${ANDROID_KEY_ALIAS:-}" || { echo "::error::Missing secret ANDROID_KEY_ALIAS"; exit 1; }
+          test -n "${ANDROID_KEY_PASSWORD:-}" || { echo "::error::Missing secret ANDROID_KEY_PASSWORD"; exit 1; }
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          chmod 600 "$ANDROID_KEYSTORE_PATH"
+          keytool -list -keystore "$ANDROID_KEYSTORE_PATH" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" >/dev/null
+          echo "Release keystore restored and verified."
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          tag_name: v1.2.0
-          name: Learn v1.2.0
-          body: |
-            Learn v1.2.0
+          gradle-version: "8.11.1"
 
-            - Modèles Tiny Q8, Base Q5 et Small Q5 adaptés aux téléphones.
-            - Limite d'enregistrement de 2 minutes par session.
-            - Erreurs de transcription explicites et durée de traitement affichée.
-            - Mise à jour de whisper.cpp vers v1.9.5.
-            - Compilation avec Android API 36 et NDK compatible avec les pages mémoire de 16 Ko.
-          files: dist/app-debug.apk
-          fail_on_unmatched_files: true
+      - name: Build signed release APK
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify release APK signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner -print -quit)"
+          test -n "$APKSIGNER" || { echo "::error::apksigner was not found in the Android SDK"; exit 1; }
+          "$APKSIGNER" verify --verbose "$APK"
+          "$APKSIGNER" verify --print-certs "$APK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: learn-release-signed-apk
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
