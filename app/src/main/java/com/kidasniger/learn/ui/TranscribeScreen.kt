@@ -775,12 +775,12 @@ private fun stopAndTranscribe(
 
 private fun makeSubtitles(text: String, webVtt: Boolean): String {
     val sentences = text.replace("\\r", " ").replace("\\n", " ")
-        .split(Regex("(?<=[.!?])\\\\s+")).map { it.trim() }.filter { it.isNotBlank() }
+        .split(Regex("(?<=[.!?])\\s+")).map { it.trim() }.filter { it.isNotBlank() }
     val out = StringBuilder()
     if (webVtt) out.append("WEBVTT\\n\\n")
     var timeMs = 0L
     sentences.forEachIndexed { index, sentence ->
-        val duration = maxOf(1800L, sentence.split("\\\\s+".toRegex()).size * 320L)
+        val duration = maxOf(1800L, sentence.split("\\s+".toRegex()).size * 320L)
         if (!webVtt) out.append(index + 1).append('\\n')
         out.append(formatSubtitleTime(timeMs, webVtt)).append(" --> ")
             .append(formatSubtitleTime(timeMs + duration, webVtt)).append('\\n')
