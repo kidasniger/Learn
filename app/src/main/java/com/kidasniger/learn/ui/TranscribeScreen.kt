@@ -272,6 +272,15 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                         expanded = downloadMenuExpanded,
                         onDismissRequest = { downloadMenuExpanded = false }
                     ) {
+                        if (viewModel.modelFile.isFile && !modelLoaded) {
+                            DropdownMenuItem(
+                                text = { Text("Charger le modèle existant") },
+                                onClick = {
+                                    downloadMenuExpanded = false
+                                    viewModel.loadExistingModel()
+                                }
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Tiny Q8 — rapide (~42 Mo)") },
                             onClick = {

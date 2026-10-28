@@ -84,29 +84,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             initialValue = emptyList()
         )
 
-        if (modelFile.exists()) {
-            if (modelFile.length() > MAX_MODEL_BYTES) {
-                _statusText.value =
-                    "Le modèle installé est trop lourd pour ce téléphone. Choisissez Tiny Q8 ou Base Q5."
+        _statusText.value = if (modelFile.isFile) {
+            "Modèle conservé sur ce téléphone. Appuyez sur « Charger le modèle existant » pour le réactiver."
+        } else {
+            "Aucun modèle chargé. Téléchargez ou importez un modèle."
+        }
+    }
+
+    /**
+     * Loads a previously downloaded model only after an explicit user action.
+     * Avoids crashing during Activity startup on devices with an incompatible or
+     * damaged native model file.
+     */
+    fun loadExistingModel() {
+        if (!modelFile.isFile) {
+            _statusText.value = "Aucun modèle enregistré. Téléchargez ou importez un modèle."
+            return
+        }
+        if (!beginOperation("Chargement du modèle...")) return
+        engineExecutor.execute {
+            try {
+                loadModelBlocking(modelFile)
+            } catch (error: OutOfMemoryError) {
                 _modelLoaded.value = false
-            } else {
-                _isBusy.value = true
-                engineExecutor.execute {
-                    try {
-                        loadModelBlocking(modelFile)
-                    } catch (error: OutOfMemoryError) {
-                        _modelLoaded.value = false
-                        _statusText.value = "Mémoire insuffisante pour charger le modèle. Fermez les autres applications ou choisissez Tiny Q8."
-                    } catch (error: LinkageError) {
-                        _modelLoaded.value = false
-                        _statusText.value = "Moteur natif indisponible : bibliothèques incompatibles avec cet appareil."
-                    } catch (error: Exception) {
-                        _modelLoaded.value = false
-                        _statusText.value = "Échec du chargement du modèle : " + safeMessage(error)
-                    } finally {
-                        _isBusy.value = false
-                    }
-                }
+                _statusText.value = "Mémoire insuffisante pour charger le modèle. Choisissez Tiny Q8."
+            } catch (error: LinkageError) {
+                _modelLoaded.value = false
+                _statusText.value = "Moteur natif incompatible avec cet appareil."
+            } catch (error: Exception) {
+                _modelLoaded.value = false
+                _statusText.value = "Échec du chargement du modèle : " + safeMessage(error)
+            } finally {
+                _isBusy.value = false
             }
         }
     }
