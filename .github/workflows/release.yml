@@ -30,12 +30,6 @@ jobs:
   release:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    env:
-      RELEASE_VERSION: ${{ inputs.release_version }}
-      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/learn-release.jks
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,6 +42,8 @@ jobs:
 
       - name: Validate release version and tag availability
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           set -euo pipefail
           python3 - "$RELEASE_VERSION" app/build.gradle.kts <<'PY'
@@ -110,6 +106,12 @@ jobs:
 
       - name: Restore private release keystore
         shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/learn-release.jks
         run: |
           set -euo pipefail
           test -n "${ANDROID_KEYSTORE_BASE64:-}" || { echo "::error::Missing secret ANDROID_KEYSTORE_BASE64"; exit 1; }
@@ -128,6 +130,9 @@ jobs:
       - name: Build a same-signer baseline for the upgrade test
         env:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/learn-release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           gradle assembleRelease -PversionNameOverride=1.2.0 -PversionCodeOverride=3 --no-daemon
@@ -137,6 +142,9 @@ jobs:
       - name: Run unit tests, lint, and build the release APK
         env:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/learn-release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: gradle testDebugUnitTest lintDebug assembleRelease --no-daemon
 
       - name: Verify release APK version, signature, and SHA-256
@@ -208,6 +216,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release summary
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           {
             echo "## Learn v$RELEASE_VERSION"
