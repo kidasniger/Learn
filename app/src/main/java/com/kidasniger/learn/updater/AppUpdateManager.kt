@@ -437,7 +437,7 @@ internal class AppUpdateManager(context: Context) {
     private fun cleanReleaseNotes(raw: String?): String {
         if (raw.isNullOrBlank()) return "Améliorations et corrections de stabilité."
         val lines = raw.lines()
-            .map { it.trim().replace(Regex("^#{1,6}\s*"), "").replace(Regex("""^[-*•]\s*"""), "• ") }
+            .map { it.trim().replace(Regex("""^#{1,6}\s*"""), "").replace(Regex("""^[-*•]\s*"""), "• ") }
             .filter { it.isNotBlank() && !it.startsWith("<!--") }
         return lines.take(40).joinToString("\n").take(5000).ifBlank {
             "Améliorations et corrections de stabilité."
