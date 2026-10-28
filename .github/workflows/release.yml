@@ -1,6 +1,8 @@
 name: Validate and publish Learn release
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       release_version:
@@ -17,7 +19,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-workflow-check:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm release is manual-only
+        run: echo "Aucun tag ou release n'est publié lors d'un push. Utilisez workflow_dispatch après validation."
+
   release:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     env:
       RELEASE_VERSION: ${{ inputs.release_version }}
