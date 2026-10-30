@@ -169,7 +169,7 @@ jobs:
           mkdir -p dist
           cp "$APK" "dist/Learn-v$RELEASE_VERSION.apk"
           (cd dist && sha256sum "Learn-v$RELEASE_VERSION.apk" > "Learn-v$RELEASE_VERSION.apk.sha256")
-          sha256sum --check "dist/Learn-v$RELEASE_VERSION.apk.sha256"
+          (cd dist && sha256sum --check "Learn-v$RELEASE_VERSION.apk.sha256")
           echo "apk_name=Learn-v$RELEASE_VERSION.apk" >> "$GITHUB_OUTPUT"
 
       - name: Verify in-place installation upgrade on an Android emulator
