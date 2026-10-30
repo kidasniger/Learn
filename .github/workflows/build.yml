@@ -103,13 +103,7 @@ jobs:
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
           emulator-boot-timeout: 1200
-          script: |
-            set +e
-            gradle connectedDebugAndroidTest --no-daemon
-            result=$?
-            adb logcat -d -v threadtime > "$GITHUB_WORKSPACE/emulator-logcat.txt" 2>&1 || true
-            adb shell dumpsys activity activities > "$GITHUB_WORKSPACE/emulator-activities.txt" 2>&1 || true
-            exit "$result"
+          script: gradle connectedDebugAndroidTest --no-daemon; rc=$?; adb logcat -d -v threadtime > "$GITHUB_WORKSPACE/emulator-logcat.txt" 2>&1 || true; adb shell dumpsys activity activities > "$GITHUB_WORKSPACE/emulator-activities.txt" 2>&1 || true; exit $rc
 
       - name: Upload emulator diagnostics
         if: always()

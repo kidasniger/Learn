@@ -193,21 +193,9 @@ jobs:
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
           emulator-boot-timeout: 1200
-          script: |
-            # sh (dash) ne supporte pas pipefail : rester POSIX.
-            set -eu
-            adb install "$GITHUB_WORKSPACE/test_artifacts/baseline-v1.2.0-same-key.apk"
-            adb shell dumpsys package com.kidasniger.learn | grep -F "versionName=1.2.0"
-            adb install -r "$GITHUB_WORKSPACE/dist/Learn-v$RELEASE_VERSION.apk"
-            adb shell dumpsys package com.kidasniger.learn | grep -F "versionName=$RELEASE_VERSION"
-            # Vérifie que l'application mise à niveau démarre réellement et
-            # reste vivante (détection des crashs au lancement type Compose).
-            adb logcat -c
-            adb shell am start -W -n com.kidasniger.learn/.MainActivity
-            sleep 8
-            PID="$(adb shell pidof com.kidasniger.learn | tr -d '\r')"
-            test -n "$PID" || { adb logcat -d -v threadtime | tail -200; exit 1; }
-            adb shell am force-stop com.kidasniger.learn
+          # L'action exécute le script ligne par ligne (sh -c séparés) :
+          # garder une seule ligne pour que les échecs intermédiaires stoppent tout.
+          script: adb install "$GITHUB_WORKSPACE/test_artifacts/baseline-v1.2.0-same-key.apk" && adb shell dumpsys package com.kidasniger.learn | grep -F "versionName=1.2.0" && adb install -r "$GITHUB_WORKSPACE/dist/Learn-v$RELEASE_VERSION.apk" && adb shell dumpsys package com.kidasniger.learn | grep -F "versionName=$RELEASE_VERSION" && adb logcat -c && adb shell am start -W -n com.kidasniger.learn/.MainActivity && sleep 8 && test -n "$(adb shell pidof com.kidasniger.learn)" && adb shell am force-stop com.kidasniger.learn
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
 
