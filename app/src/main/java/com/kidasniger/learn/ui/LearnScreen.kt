@@ -33,6 +33,7 @@ import androidx.core.content.ContextCompat
 import com.kidasniger.learn.ui.TextSimilarity.DiffType
 import com.kidasniger.learn.ui.TextSimilarity.Report
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -144,7 +145,7 @@ fun LearnScreen(viewModel: MainViewModel) {
         )
         if (minimumBuffer <= 0) {
             viewModel.setStatus("Le microphone ne prend pas en charge ce format audio.")
-            return@rememberLauncherForActivityResult
+            return
         }
         val recorder = try {
             AudioRecord(
@@ -156,19 +157,19 @@ fun LearnScreen(viewModel: MainViewModel) {
             )
         } catch (error: Exception) {
             viewModel.setStatus("Impossible d'initialiser le microphone.")
-            return@rememberLauncherForActivityResult
+            return
         }
         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
             recorder.release()
             viewModel.setStatus("Le microphone n'a pas pu être initialisé.")
-            return@rememberLauncherForActivityResult
+            return
         }
         try {
             recorder.startRecording()
         } catch (error: Exception) {
             recorder.release()
             viewModel.setStatus("L'enregistrement n'a pas démarré.")
-            return@rememberLauncherForActivityResult
+            return
         }
         recorderInstance = recorder
         recordingFinalized.set(false)
@@ -409,6 +410,7 @@ private fun ScoreColumn(value: String, label: String) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FlowCorrectedWords(report: Report) {
     androidx.compose.foundation.layout.FlowRow(
