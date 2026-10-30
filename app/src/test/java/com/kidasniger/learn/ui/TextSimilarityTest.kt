@@ -62,7 +62,7 @@ class TextSimilarityTest {
     fun `word levenshtein matches known distances`() {
         assertEquals(0, TextSimilarity.wordLevenshtein(listOf("a", "b"), listOf("a", "b")))
         assertEquals(1, TextSimilarity.wordLevenshtein(listOf("a", "b"), listOf("a", "c")))
-        assertEquals(2, TextSimilarity.wordLevenshtein(listOf("a", "b", "c"), listOf("x")))
+        assertEquals(3, TextSimilarity.wordLevenshtein(listOf("a", "b", "c"), listOf("x")))
         assertEquals(1, TextSimilarity.wordLevenshtein(listOf("a"), listOf("a", "b")))
     }
 
