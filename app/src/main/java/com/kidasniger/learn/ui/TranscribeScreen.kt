@@ -66,6 +66,9 @@ fun TranscribeScreen(viewModel: MainViewModel) {
     var saveTitle by remember { mutableStateOf("") }
     var downloadMenuExpanded by remember { mutableStateOf(false) }
     var langMenuExpanded by remember { mutableStateOf(false) }
+    var settingsDialog by remember { mutableStateOf(false) }
+    val whisperSettings by viewModel.whisperSettings.collectAsState()
+    val lastSegments by viewModel.lastSegments.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -124,10 +127,17 @@ fun TranscribeScreen(viewModel: MainViewModel) {
             try {
                 withContext(Dispatchers.IO) {
                     context.contentResolver.openOutputStream(uri)?.use { output ->
+                        val nativeSubtitles = lastSegments.isNotEmpty()
                         when (exportFormat) {
                             "pdf" -> writeTextPdf(output, currentText)
-                            "srt" -> output.write(makeSubtitles(currentText, false).toByteArray(Charsets.UTF_8))
-                            "vtt" -> output.write(makeSubtitles(currentText, true).toByteArray(Charsets.UTF_8))
+                            "srt" -> output.write(
+                                (if (nativeSubtitles) subtitlesFromSegments(lastSegments, false)
+                                else makeEstimatedSubtitles(currentText, false)).toByteArray(Charsets.UTF_8)
+                            )
+                            "vtt" -> output.write(
+                                (if (nativeSubtitles) subtitlesFromSegments(lastSegments, true)
+                                else makeEstimatedSubtitles(currentText, true)).toByteArray(Charsets.UTF_8)
+                            )
                             else -> output.write(currentText.toByteArray(Charsets.UTF_8))
                         }
                     } ?: throw IllegalStateException("Impossible d'ouvrir le fichier.")
@@ -179,6 +189,9 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 ),
                 actions = {
+                    IconButton(onClick = { settingsDialog = true }, enabled = !isBusy) {
+                        Icon(Icons.Default.Tune, contentDescription = "Réglages du moteur")
+                    }
                     Box {
                         TextButton(onClick = { langMenuExpanded = true }) {
                             Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -498,8 +511,12 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                             Icon(Icons.Default.FileDownload, contentDescription = null); Spacer(Modifier.width(5.dp)); Text("Exporter")
                         }
                         DropdownMenu(exportMenuExpanded, onDismissRequest = { exportMenuExpanded = false }) {
-                            listOf("txt" to "Texte TXT", "pdf" to "Document PDF",
-                                "srt" to "SRT (horodatages estimés)", "vtt" to "VTT (horodatages estimés)").forEach { item ->
+                            val nativeAvailable = lastSegments.isNotEmpty()
+                            listOf(
+                                "txt" to "Texte TXT", "pdf" to "Document PDF",
+                                "srt" to (if (nativeAvailable) "SRT (horodatages natifs)" else "SRT (horodatages estimés)"),
+                                "vtt" to (if (nativeAvailable) "VTT (horodatages natifs)" else "VTT (horodatages estimés)")
+                            ).forEach { item ->
                                 DropdownMenuItem(text = { Text(item.second) }, onClick = {
                                     exportFormat = item.first; exportMenuExpanded = false
                                     exportLauncher.launch("learn-transcription.${item.first}")
@@ -509,9 +526,15 @@ fun TranscribeScreen(viewModel: MainViewModel) {
                     }
                 }
                 if (subtitleMode) {
-                    Text("Les horodatages SRT/VTT sont estimés : le moteur ne fournit pas encore les horaires natifs.",
-                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
-                    Text(makeSubtitles(currentText, true), style = MaterialTheme.typography.bodySmall)
+                    if (lastSegments.isNotEmpty()) {
+                        Text("Horodatages natifs du moteur : les fichiers SRT/VTT suivent le rythme réel de votre voix.",
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        Text(subtitlesFromSegments(lastSegments, true), style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        Text("Horodatages estimés par phrases (les horodatages natifs apparaissent après la prochaine transcription).",
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                        Text(makeEstimatedSubtitles(currentText, true), style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
 
@@ -591,6 +614,20 @@ fun TranscribeScreen(viewModel: MainViewModel) {
             dismissButton = {
                 TextButton(onClick = { saveDialogShown = false }) {
                     Text("Annuler")
+                }
+            }
+        )
+    }
+
+    if (settingsDialog) {
+        WhisperSettingsDialog(
+            current = whisperSettings,
+            onDismiss = { settingsDialog = false },
+            onApply = { newSettings ->
+                viewModel.updateWhisperSettings(newSettings)
+                settingsDialog = false
+                scope.launch {
+                    snackbarHostState.showSnackbar("Réglages appliqués. Rechargez le modèle pour changer d'accélération.")
                 }
             }
         )
@@ -790,33 +827,6 @@ private fun stopAndTranscribe(
         return
     }
     viewModel.transcribeAudio(audio) {}
-}
-
-private fun makeSubtitles(text: String, webVtt: Boolean): String {
-    val sentences = text.replace("\r", " ").replace("\n", " ")
-        .split(Regex("(?<=[.!?])\\s+"))
-        .map { it.trim() }
-        .filter { it.isNotBlank() }
-    val out = StringBuilder()
-    if (webVtt) out.append("WEBVTT\n\n")
-    var timeMs = 0L
-    sentences.forEachIndexed { index, sentence ->
-        val duration = maxOf(1800L, sentence.split("\\s+".toRegex()).size * 320L)
-        if (!webVtt) out.append(index + 1).append('\n')
-        out.append(formatSubtitleTime(timeMs, webVtt)).append(" --> ")
-            .append(formatSubtitleTime(timeMs + duration, webVtt)).append('\n')
-            .append(sentence).append("\n\n")
-        timeMs += duration
-    }
-    return out.toString()
-}
-
-private fun formatSubtitleTime(ms: Long, webVtt: Boolean): String {
-    val h = ms / 3_600_000
-    val m = (ms / 60_000) % 60
-    val s = (ms / 1_000) % 60
-    val millis = ms % 1_000
-    return "%02d:%02d:%02d%s%03d".format(Locale.ROOT, h, m, s, if (webVtt) "." else ",", millis)
 }
 
 private fun writeTextPdf(output: OutputStream, text: String) {

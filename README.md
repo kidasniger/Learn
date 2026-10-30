@@ -2,6 +2,16 @@
 
 Learn est une application Android de transcription vocale en français basée sur [whisper.cpp](https://github.com/ggerganov/whisper.cpp). Une fois le modèle installé, la transcription s'effectue localement sur le téléphone.
 
+## Fonctionnalités (v1.5.0)
+
+- **Transcription hors ligne** en français et 6 autres langues, avec affichage du texte **au fil de l'eau** pendant le traitement.
+- **Horodatages natifs** : les exports SRT/VTT suivent le rythme réel de la voix (segments renvoyés par le moteur).
+- **Mode « S'entraîner »** : dictée interactive avec score de similarité, taux d'erreur par mot (WER) et correction mot à mot colorée.
+- **Réglages moteur avancés** : nombre de fils, beam search, température, prompt initial de vocabulaire, bascule GPU expérimentale.
+- **Historique enrichi** : recherche, favoris, tri, **édition** des transcriptions sauvegardées.
+- **Exports multiples** : TXT, PDF, SRT, VTT, copie et partage système.
+- **Sauvegarde/restauration JSON** de tout l'historique, plus statistiques d'usage (mots, caractères, langues).
+
 ## Installation
 
 1. Téléchargez l'APK depuis [la dernière version publiée](https://github.com/kidasniger/Learn/releases/latest).
