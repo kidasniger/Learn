@@ -150,6 +150,8 @@ jobs:
       - name: Verify release APK version, signature, and SHA-256
         id: apk
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
