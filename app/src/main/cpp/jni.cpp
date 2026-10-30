@@ -94,11 +94,6 @@ jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jlong JNICALL
-Java_com_kidasniger_learn_WhisperLib_initContext(JNIEnv *env, jobject, jstring path) {
-    return Java_com_kidasniger_learn_WhisperLib_initContextEx(env, nullptr, path, JNI_FALSE);
-}
-
-JNIEXPORT jlong JNICALL
 Java_com_kidasniger_learn_WhisperLib_initContextEx(JNIEnv *env, jobject, jstring path, jboolean useGpu) {
     if (path == nullptr) {
         return 0;
@@ -114,6 +109,11 @@ Java_com_kidasniger_learn_WhisperLib_initContextEx(JNIEnv *env, jobject, jstring
     whisper_context *context = whisper_init_from_file_with_params(p, params);
     env->ReleaseStringUTFChars(path, p);
     return reinterpret_cast<jlong>(context);
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_kidasniger_learn_WhisperLib_initContext(JNIEnv *env, jobject, jstring path) {
+    return Java_com_kidasniger_learn_WhisperLib_initContextEx(env, nullptr, path, JNI_FALSE);
 }
 
 JNIEXPORT void JNICALL
@@ -277,8 +277,8 @@ Java_com_kidasniger_learn_WhisperLib_transcribeDetailed(
             params.initial_prompt = prompt;
         }
         if (holder.callback != nullptr && holder.method != nullptr) {
-            params.on_new_segment = newSegmentCallback;
-            params.on_new_segment_user_data = &holder;
+            params.new_segment_callback = newSegmentCallback;
+            params.new_segment_callback_user_data = &holder;
         }
 
         whisper_reset_timings(context);
