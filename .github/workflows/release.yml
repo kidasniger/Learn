@@ -172,6 +172,12 @@ jobs:
           (cd dist && sha256sum --check "Learn-v$RELEASE_VERSION.apk.sha256")
           echo "apk_name=Learn-v$RELEASE_VERSION.apk" >> "$GITHUB_OUTPUT"
 
+      - name: Grant KVM access (nested virtualization on GitHub runners)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Verify in-place installation upgrade on an Android emulator
         # Infrastructure émulateur GitHub Actions instable depuis fin octobre
         # (boot timeout / adb device offline, jamais repassée). La compatibilité
