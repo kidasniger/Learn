@@ -36,6 +36,9 @@ fun HistoryScreen(viewModel: MainViewModel) {
     var sortMenu by remember { mutableStateOf(false) }
     var clearDialog by remember { mutableStateOf(false) }
     var deleteItem by remember { mutableStateOf<TranscriptionEntity?>(null) }
+    var editItem by remember { mutableStateOf<TranscriptionEntity?>(null) }
+    var editTitle by remember { mutableStateOf("") }
+    var editText by remember { mutableStateOf("") }
     var expandedId by remember { mutableStateOf<Long?>(null) }
     val favorites = remember { mutableStateListOf<Long>().apply {
         prefs.getString("favorites", "").orEmpty().split(",").mapNotNull { it.toLongOrNull() }.forEach { add(it) }
@@ -157,6 +160,14 @@ fun HistoryScreen(viewModel: MainViewModel) {
                                         clipboard.setPrimaryClip(ClipData.newPlainText(item.title, item.text))
                                         scope.launch { snackbar.showSnackbar("Transcription copiée.") }
                                     }) { Icon(Icons.Default.ContentCopy, contentDescription = "Copier") }
+                                    IconButton(onClick = {
+                                        editItem = item
+                                        editTitle = item.title
+                                        editText = item.text
+                                    }) {
+                                        Icon(Icons.Default.Edit, contentDescription = "Modifier",
+                                            tint = MaterialTheme.colorScheme.primary)
+                                    }
                                     IconButton(onClick = { deleteItem = item }) {
                                         Icon(Icons.Default.Delete, contentDescription = "Supprimer", tint = MaterialTheme.colorScheme.error)
                                     }
@@ -190,5 +201,38 @@ fun HistoryScreen(viewModel: MainViewModel) {
                 scope.launch { snackbar.showSnackbar("Historique effacé.") }
             }) { Text("Tout effacer", color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { clearDialog = false }) { Text("Annuler") } })
+    }
+
+    editItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { editItem = null },
+            title = { Text("Modifier la transcription") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = editTitle,
+                        onValueChange = { editTitle = it },
+                        label = { Text("Titre") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = editText,
+                        onValueChange = { editText = it },
+                        label = { Text("Texte") },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp),
+                        minLines = 4
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.updateTranscription(item.id, editTitle.trim().ifBlank { item.title }, editText)
+                    editItem = null
+                    scope.launch { snackbar.showSnackbar("Transcription mise à jour.") }
+                }) { Text("Enregistrer") }
+            },
+            dismissButton = { TextButton(onClick = { editItem = null }) { Text("Annuler") } }
+        )
     }
 }
