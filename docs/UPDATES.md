@@ -21,3 +21,12 @@ L'application consulte uniquement la dernière release stable publique via l'API
 Avant l'ouverture de l'installateur système, Learn vérifie que le ZIP/APK est lisible, que le package et la version correspondent, que `versionCode` augmente et que l'APK utilise la même clé de signature que l'application installée. Android affiche toujours son installateur système : Learn n'installe rien silencieusement.
 
 **Migration de signature :** certaines anciennes APK v1.2.0 peuvent avoir été signées avec une clé de débogage différente du keystore de publication. Android interdit la mise à jour par-dessus une application signée par une autre clé. L'APK installée doit alors être remplacée manuellement, après sauvegarde des données locales. Les futures versions doivent impérativement conserver la même clé de publication.
+
+## Journal des versions
+
+### v1.5.1 — correction du crash au lancement
+
+- **Cause du crash** : depuis l'ajout du vérificateur de mises à jour, `MainActivity` lisait `androidx.lifecycle.compose.LocalLifecycleOwner`, or lifecycle-runtime-compose **2.8.0** crée ce CompositionLocal sans valeur par défaut (`IllegalStateException: CompositionLocal LocalLifecycleOwner not present`) tant que Compose UI 1.7 ne le fournit pas. L'application utilise Compose UI 1.6 (BOM 2024.05.00) : le crash survenait au premier frame, donc à chaque lancement. Ce code n'avait jamais été publié avant v1.5.0 et le test émulateur n'a pas pu l'attraper (dépassement du délai de démarrage de l'émulateur, 759 s pour un timeout de 600 s).
+- **Correctif** : lifecycle-viewmodel-compose et lifecycle-runtime-compose passent de 2.8.0 à **2.8.7**, qui rétablit la compatibilité avec Compose 1.6 via le shim de rétrocompatibilité officiel d'AndroidX.
+- **Diagnostic** : nouveau rapporteur de plantage local (`CrashReporter`) — les exceptions non rattrapées sont écrites dans le stockage privé et un bouton « Partager » apparaît dans Réglages pour envoyer le rapport par e-mail ou messagerie, sans ordinateur.
+- **CI** : délai de démarrage de l'émulateur porté à 1200 s et la mise à niveau testée en release démarre désormais réellement l'application (`am start` + vérification que le processus survit).

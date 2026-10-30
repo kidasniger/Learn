@@ -1,6 +1,7 @@
 package com.kidasniger.learn.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.StatFs
@@ -15,8 +16,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -24,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.kidasniger.learn.BuildConfig
+import com.kidasniger.learn.CrashReporter
 import com.kidasniger.learn.updater.AppUpdateViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -193,6 +197,7 @@ fun AboutScreen(
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            CrashReportCard()
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Guide rapide", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -202,6 +207,58 @@ fun AboutScreen(
                     Text("4. Dans l'historique, recherchez, éditez, mettez en favori et exportez vos transcriptions.")
                     Text("5. Les exports SRT/VTT utilisent les horodatages natifs du moteur dès la première transcription.")
                     Text("6. Sauvegardez régulièrement votre historique (JSON) depuis cette page.")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CrashReportCard() {
+    val context = LocalContext.current
+    var reportPresent by remember { mutableStateOf(CrashReporter.lastReport(context) != null) }
+    if (!reportPresent) return
+    val summary = remember(reportPresent) { CrashReporter.reportSummary(context) ?: "Plantage récent" }
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f))
+    ) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.BugReport, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                Spacer(Modifier.width(8.dp))
+                Text("Rapport de plantage", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            }
+            Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "L'application a rencontré un problème. Partagez ce rapport avec le développeur pour accélérer la correction.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        val text = CrashReporter.shareableText(context) ?: return@Button
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "Learn — rapport de plantage")
+                            putExtra(Intent.EXTRA_TEXT, text)
+                        }
+                        context.startActivity(Intent.createChooser(intent, "Partager le rapport de plantage"))
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Partager")
+                }
+                OutlinedButton(
+                    onClick = {
+                        CrashReporter.clear(context)
+                        reportPresent = false
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Effacer")
                 }
             }
         }

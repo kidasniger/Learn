@@ -33,6 +33,7 @@ import kotlinx.coroutines.delay
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashReporter.install(this)
         enableEdgeToEdge()
         setContent {
             val preferences = remember { getSharedPreferences("learn_preferences", MODE_PRIVATE) }
